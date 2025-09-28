@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Arena {
     buffer: Box<[u8]>,
@@ -37,6 +37,9 @@ impl Arena {
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
     pub fn alloc(&self, n: u64, align: u64) -> Option<u64> {
+        trace!("Arena address: {:p}", self as *const Self);
+        trace!("Arena::alloc: n={}, align={}", n, align);
+        trace!("Arena buffer address: {:p}", self.buffer.as_ptr());
         // if arena is closed, return None
         if self.closed.load(Ordering::SeqCst) {
             return None;
@@ -64,6 +67,10 @@ impl Arena {
             // compute the aligned start and new position
             let aligned_start = (start + align_mask) & !align_mask;
             let new_position = aligned_start + n;
+            trace!(
+                "Arena::alloc: start={}, aligned_start={}, new_position={}, n={}, align={}",
+                start, aligned_start, new_position, n, align
+            );
 
             // check for out of memory,
             // this could always occur due to concurrent allocations
@@ -174,57 +181,110 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::exec;
+
     use super::*;
 
     #[test]
     fn test_arena_alloc() {
-        let arena = Arena::new(10);
-        arena.alloc(5, 1).unwrap();
-        assert_eq!(arena.position(), 5);
-        assert_eq!(arena.alloc(6, 1), None);
-        assert_eq!(arena.position(), 5); // position should remain unchanged
-        arena.alloc(5, 1).unwrap();
-        assert_eq!(arena.position(), 10);
+        let test = || {
+            let arena = Arena::new(10);
+            arena.alloc(5, 1).unwrap();
+            assert_eq!(arena.position(), 5);
+            assert_eq!(arena.alloc(6, 1), None);
+            assert_eq!(arena.position(), 5); // position should remain unchanged
+            arena.alloc(5, 1).unwrap();
+            assert_eq!(arena.position(), 10);
+        };
+        exec(test);
+    }
+
+    #[test]
+    fn test_arena_alloc_racy() {
+        let test = || {
+            use crate::sync::Arc;
+            use crate::thread;
+
+            let arena = Arc::new(Arena::new(1000));
+            let mut handles = vec![];
+
+            for _ in 0..10 {
+                let arena = arena.clone();
+                let handle = thread::spawn(move || {
+                    for _ in 0..100 {
+                        let offset = arena.alloc(5, 1).unwrap();
+                        let ptr = arena.offset_to_ptr(offset) as *mut u32;
+                        unsafe {
+                            *ptr = 424242;
+                            assert_eq!(*ptr, 424242);
+                        }
+                    }
+                });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            assert_eq!(arena.position(), 500);
+        };
+        exec(test);
     }
 
     #[test]
     #[should_panic(expected = "n must be greater than 0")]
     fn test_arena_alloc_zero() {
-        let arena = Arena::new(10);
-        arena.alloc(0, 1).unwrap();
+        let test = || {
+            let arena = Arena::new(10);
+            arena.alloc(0, 1).unwrap();
+        };
+        exec(test);
     }
 
     #[test]
     #[should_panic(expected = "align must be a power of two")]
     fn test_arena_alloc_non_power_of_two_align() {
-        let arena = Arena::new(10);
-        arena.alloc(5, 3).unwrap();
+        let test = || {
+            let arena = Arena::new(10);
+            arena.alloc(5, 3).unwrap();
+        };
+        exec(test);
     }
 
     #[test]
     fn test_arena_reset() {
-        let mut arena = Arena::new(10);
-        arena.alloc(5, 1).unwrap();
-        assert_eq!(arena.position(), 5);
-        arena.reset();
-        assert_eq!(arena.position(), 0);
+        let test = || {
+            let mut arena = Arena::new(10);
+            arena.alloc(5, 1).unwrap();
+            assert_eq!(arena.position(), 5);
+            arena.reset();
+            assert_eq!(arena.position(), 0);
+        };
+        exec(test);
     }
 
     #[test]
     fn test_arena_ptr_at() {
-        let arena = Arena::new(10);
-        let offset = arena.alloc(4, 4).unwrap();
-        let ptr = arena.offset_to_ptr(offset) as *mut u32;
-        unsafe {
-            *ptr = 424242;
-            assert_eq!(*ptr, 424242);
-        }
+        let test = || {
+            let arena = Arena::new(10);
+            let offset = arena.alloc(4, 4).unwrap();
+            let ptr = arena.offset_to_ptr(offset) as *mut u32;
+            unsafe {
+                *ptr = 424242;
+                assert_eq!(*ptr, 424242);
+            }
+        };
+        exec(test);
     }
 
     #[test]
     #[should_panic(expected = "index 10 out of range")]
     fn test_arena_ptr_at_out_of_bounds() {
-        let arena = Arena::new(10);
-        let _ptr = arena.offset_to_ptr(10);
+        let test = || {
+            let arena = Arena::new(10);
+            let _ptr = arena.offset_to_ptr(10);
+        };
+        exec(test);
     }
 }
