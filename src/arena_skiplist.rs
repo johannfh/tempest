@@ -80,17 +80,15 @@ impl ArenaSkiplist {
 
         // Link head with tail at all levels
         for height in 0..MAX_HEIGHT {
-            tail.tower[height as usize].init(0);
+            head.tower[height as usize].init(0);
             tail.tower[height as usize].init(0);
 
-            unsafe {
-                (*head_ptr).tower[height as usize]
-                    .next_offset
-                    .store(tail_offset as u32, order);
-                (*tail_ptr).tower[height as usize]
-                    .prev_offset
-                    .store(head_offset as u32, order);
-            }
+            head.tower[height as usize]
+                .next_offset
+                .store(tail_offset as u32, order);
+            tail.tower[height as usize]
+                .prev_offset
+                .store(head_offset as u32, order);
         }
 
         skip_list.tail = tail_ptr;
@@ -648,11 +646,12 @@ impl Node {
         // This must be done after linking pred's next to ensure that
         // the list remains consistent during concurrent modifications.
         // Linking succ's prev is done through CAS as well, but failure here
-        // is less critical. If it fails, the list may be temporarily inconsistent,
-        // but it will be corrected by future operations. -> eventual consistency.
-        // This works since failure here means another thread has inserted a node
-        // between this node and succ between end of Phase 2 ('publish') and end of Phase 3.
-        // In that case, the new node will eventually link to succ correctly.
+        // is handled differently.
+        // If the CAS fails, it means another thread modified succ's prev,
+        // by inserting another node between this node and succ.
+        // This can be ignored, as the list remains consistent.
+        // The new node will still be reachable through pred's next pointer.
+        // We log a warning for debugging purposes, but do not retry.
         match succ_node.prev_offset_ptr(height).compare_exchange(
             pred_offset,
             self_offset,
