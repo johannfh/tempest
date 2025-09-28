@@ -704,7 +704,6 @@ impl PartialOrd for Node {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use crate::tests::exec;
@@ -784,7 +783,6 @@ mod tests {
         exec(test);
     }
 
-    /*
     #[test]
     fn test_skiplist_iterator() {
         let test = || {
@@ -806,5 +804,5 @@ mod tests {
             assert_eq!(node.value_size, 0);
         };
         exec(test);
-    }*/
-}*/
+    }
+}
