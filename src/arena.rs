@@ -1,13 +1,11 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[derive(Debug, PartialEq)]
-pub enum ArenaError {
-    OutOfMemory,
-}
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Arena {
     buffer: Box<[u8]>,
     position: AtomicU64,
+    /// Current running allocation count
+    allocation_count: AtomicU64,
+    closed: AtomicBool,
 }
 
 impl Arena {
@@ -21,6 +19,8 @@ impl Arena {
         Self {
             buffer: vec![0; cap].into_boxed_slice(),
             position: 0.into(),
+            allocation_count: 0.into(),
+            closed: false.into(),
         }
     }
 
@@ -30,13 +30,23 @@ impl Arena {
     /// Returns the offset of the allocated memory on success.
     ///
     /// # Returns
-    /// - `Ok(offset)` on success, where `offset` is the offset of the allocated memory.
-    /// - `Err(ArenaError::OutOfMemory)` if there is not enough space in the arena.
+    /// - `Some(offset)` on success, where `offset` is the offset of the allocated memory.
+    /// - `None` if there is not enough space in the arena or if the arena is closed.
     ///
     /// # Panics
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
-    pub fn alloc(&self, n: u32, align: u32) -> Result<u32, ArenaError> {
+    pub fn alloc(&self, n: u64, align: u64) -> Option<u64> {
+        // if arena is closed, return None
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        // increment allocation count, since we're starting an allocation
+        // TODO: move this into a seperate function to ensure that allocations
+        // to the `offset` are completed before any other processing.
+        self.allocation_count.fetch_add(1, Ordering::SeqCst);
+
         assert!(n > 0, "n must be greater than 0");
         assert!(
             align.is_power_of_two(),
@@ -44,38 +54,42 @@ impl Arena {
             align
         );
 
-        let align_mask = (align - 1) as u64;
+        let align_mask = align - 1;
         let capacity = self.buffer.len() as u64;
 
         loop {
             // read the position at start of the transaction
-            let start = self.position.load(Ordering::Relaxed) as u64;
+            let start = self.position.load(Ordering::Relaxed);
 
             // compute the aligned start and new position
             let aligned_start = (start + align_mask) & !align_mask;
-            let new_position = aligned_start + (n as u64);
+            let new_position = aligned_start + n;
 
             // check for out of memory,
             // this could always occur due to concurrent allocations
             if new_position > capacity {
-                return Err(ArenaError::OutOfMemory);
+                // decrement allocation count, since allocation failed
+                self.allocation_count.fetch_sub(1, Ordering::SeqCst);
+                return None;
             }
 
-            // TODO: read up on compare_exchange_weak vs strong
+            // PERF: use weak here, since we're inside a retry loop
+            // NOTE: Also known as "compare-and-swap" (CAS)
+            // See also: https://en.m.wikipedia.org/wiki/Compare-and-swap
             match self.position.compare_exchange_weak(
                 start,
                 new_position,
                 Ordering::SeqCst,
                 Ordering::Relaxed,
             ) {
+                // CAS succeeded, we have reserved the space
                 Ok(_) => {
-                    // CAS succeeded, we have reserved the space
-                    return Ok(aligned_start as u32);
+                    // decrement allocation count, since allocation is done
+                    self.allocation_count.fetch_sub(1, Ordering::SeqCst);
+                    return Some(aligned_start);
                 }
-                Err(_) => {
-                    // CAS failed, another thread modified the position during transaction, retry
-                    continue;
-                }
+                // CAS failed, another thread modified the position during transaction, retry
+                Err(_) => continue,
             };
         }
     }
@@ -104,53 +118,57 @@ impl Arena {
     }
 
     /// Returns a pointer into the arena at the given offset.
+    /// The caller must ensure that the offset is within bounds.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `offset` is within bounds of the arena.
+    /// - Caller must ensure that the returned pointer is not used after the arena is dropped.
+    /// - Caller must ensure that the returned pointer is not used after the arena is reset.
+    /// - Caller must ensure that the returned pointer is not used after the arena is closed.
     ///
     /// # Panics
-    /// Panics if the offset is out of bounds, i.e., if `offset >= capacity()`,
-    /// to prevent undefined behavior.
-    pub fn ptr_at(&self, offset: u32) -> *mut u8 {
+    /// - if `offset` is out of bounds of the arena.
+    pub fn offset_to_ptr(&self, offset: u64) -> *mut u8 {
         assert!(
-            (offset as usize) < self.buffer.len(),
-            "index {} out of range",
-            offset
+            offset < self.buffer.len() as u64,
+            "index {} out of range (capacity {})",
+            offset,
+            self.buffer.len()
         );
-        // SAFETY: The offset is guaranteed to be within bounds by the assertion above.
+        // SAFETY: Caller must ensure offset is within bounds when using
         unsafe { self.buffer.as_ptr().add(offset as usize) as *mut u8 }
     }
 
-    /// Returns a pointer into the arena at the given offset without bounds checking.
+    /// Returns a pointer into the arena at the given offset with bounds checking.
     ///
-    /// # Safety
-    /// The caller must ensure that the offset is within bounds, i.e., `offset < capacity()`.
-    /// Failing to do so may lead to undefined behavior.
-    pub unsafe fn offset_to_ptr(&self, offset: u32) -> *mut u8 {
-        // SAFETY: Caller must ensure offset is within bounds.
-        unsafe { self.buffer.as_ptr().add(offset as usize) as *mut u8 }
+    /// # Panics
+    /// - if `ptr` is out of bounds of the arena.
+    pub fn ptr_to_offset(&self, ptr: *const u8) -> u64 {
+        assert!(
+            (ptr as usize) >= (self.buffer.as_ptr() as usize)
+                && (ptr as usize) < (self.buffer.as_ptr() as usize + self.buffer.len()),
+            "pointer {:p} out of bounds of arena [{:p}, {:p})",
+            ptr,
+            self.buffer.as_ptr(),
+            unsafe { self.buffer.as_ptr().add(self.buffer.len()) }
+        );
+        let base_ptr = self.buffer.as_ptr();
+
+        //if ptr >= base_ptr && ptr < end_ptr {
+        // SAFETY: checked that ptr is within bounds.
+        unsafe { ptr.offset_from(base_ptr) as u64 }
     }
 
-    pub fn ptr_to_offset(&self, ptr: *const u8) -> Option<u32> {
-        let base_ptr = self.buffer.as_ptr();
-        // SAFETY: We are only doing pointer arithmetic within the bounds of the buffer.
-        let end_ptr = unsafe { base_ptr.add(self.buffer.len()) };
-
-        if ptr >= base_ptr && ptr < end_ptr {
-            // SAFETY: checked that ptr is within bounds.
-            Some(unsafe { ptr.offset_from(base_ptr) as u32 })
-        } else {
-            None
-        }
+    /// Returns true if all allocations have completed.
+    /// This means that the allocation count is zero.
+    pub fn allocations_complete(&self) -> bool {
+        self.allocation_count.load(Ordering::SeqCst) == 0
     }
 
-    /// Returns the offset of the given pointer from the start of the arena without bounds
-    /// checking.
-    ///
-    /// # Safety
-    /// The caller must ensure that the pointer is within bounds, i.e.,
-    /// `ptr >= base_ptr && ptr < base_ptr + capacity()`.
-    pub unsafe fn offset_of_unchecked(&self, ptr: *const u8) -> u32 {
-        let base_ptr = self.buffer.as_ptr();
-        // SAFETY: Caller must ensure ptr is within bounds.
-        unsafe { ptr.offset_from(base_ptr) as u32 }
+    /// Prevents any further allocations in the arena.
+    /// There may still be ongoing allocations that will complete.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
     }
 }
 
@@ -163,7 +181,7 @@ mod tests {
         let arena = Arena::new(10);
         arena.alloc(5, 1).unwrap();
         assert_eq!(arena.position(), 5);
-        assert_eq!(arena.alloc(6, 1), Err(ArenaError::OutOfMemory));
+        assert_eq!(arena.alloc(6, 1), None);
         assert_eq!(arena.position(), 5); // position should remain unchanged
         arena.alloc(5, 1).unwrap();
         assert_eq!(arena.position(), 10);
@@ -196,10 +214,17 @@ mod tests {
     fn test_arena_ptr_at() {
         let arena = Arena::new(10);
         let offset = arena.alloc(4, 4).unwrap();
-        let ptr = arena.ptr_at(offset) as *mut u32;
+        let ptr = arena.offset_to_ptr(offset) as *mut u32;
         unsafe {
             *ptr = 424242;
             assert_eq!(*ptr, 424242);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "index 10 out of range")]
+    fn test_arena_ptr_at_out_of_bounds() {
+        let arena = Arena::new(10);
+        let _ptr = arena.offset_to_ptr(10);
     }
 }
