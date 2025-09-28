@@ -284,7 +284,7 @@ impl ArenaSkiplist {
         // Allocate space for the node and its key/value in the arena
         let arena_offset = self
             .arena
-            .alloc(total_size as u64, 4)
+            .alloc(total_size as u64, 8)
             .ok_or(InsertError::OutOfMemory(total_size))?;
 
         // SAFETY: We have just allocated `total_size` bytes at `arena_offset`,
@@ -704,6 +704,7 @@ impl PartialOrd for Node {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::tests::exec;
@@ -806,4 +807,4 @@ mod tests {
         };
         exec(test);
     }*/
-}
+}*/

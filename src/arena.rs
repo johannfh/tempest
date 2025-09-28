@@ -1,11 +1,8 @@
-use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicU64, Ordering};
 
 pub struct Arena {
     buffer: Box<[u8]>,
     position: AtomicU64,
-    /// Current running allocation count
-    allocation_count: AtomicU64,
-    closed: AtomicBool,
 }
 
 impl Arena {
@@ -19,8 +16,6 @@ impl Arena {
         Self {
             buffer: vec![0; cap].into_boxed_slice(),
             position: 0.into(),
-            allocation_count: 0.into(),
-            closed: false.into(),
         }
     }
 
@@ -37,18 +32,9 @@ impl Arena {
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
     pub fn alloc(&self, n: u64, align: u64) -> Option<u64> {
-        trace!("Arena address: {:p}", self as *const Self);
-        trace!("Arena::alloc: n={}, align={}", n, align);
-        trace!("Arena buffer address: {:p}", self.buffer.as_ptr());
-        // if arena is closed, return None
-        if self.closed.load(Ordering::SeqCst) {
-            return None;
-        }
-
-        // increment allocation count, since we're starting an allocation
-        // TODO: move this into a seperate function to ensure that allocations
-        // to the `offset` are completed before any other processing.
-        self.allocation_count.fetch_add(1, Ordering::SeqCst);
+        println!("Arena address: {:p}", self as *const Self);
+        println!("Arena::alloc: n={}, align={}", n, align);
+        println!("Arena buffer address: {:p}", self.buffer.as_ptr());
 
         assert!(n > 0, "n must be greater than 0");
         assert!(
@@ -57,70 +43,55 @@ impl Arena {
             align
         );
 
-        let align_mask = align - 1;
         let capacity = self.buffer.len() as u64;
-
-        loop {
-            // read the position at start of the transaction
-            let start = self.position.load(Ordering::Relaxed);
-
-            // compute the aligned start and new position
-            let aligned_start = (start + align_mask) & !align_mask;
-            let new_position = aligned_start + n;
-            trace!(
-                "Arena::alloc: start={}, aligned_start={}, new_position={}, n={}, align={}",
-                start, aligned_start, new_position, n, align
-            );
-
-            // check for out of memory,
-            // this could always occur due to concurrent allocations
-            if new_position > capacity {
-                // decrement allocation count, since allocation failed
-                self.allocation_count.fetch_sub(1, Ordering::SeqCst);
-                return None;
-            }
-
-            // PERF: use weak here, since we're inside a retry loop
-            // NOTE: Also known as "compare-and-swap" (CAS)
-            // See also: https://en.m.wikipedia.org/wiki/Compare-and-swap
-            match self.position.compare_exchange_weak(
-                start,
-                new_position,
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            ) {
-                // CAS succeeded, we have reserved the space
-                Ok(_) => {
-                    // decrement allocation count, since allocation is done
-                    self.allocation_count.fetch_sub(1, Ordering::SeqCst);
-                    return Some(aligned_start);
-                }
-                // CAS failed, another thread modified the position during transaction, retry
-                Err(_) => continue,
-            };
+        let original_size = self.position();
+        if original_size > capacity {
+            return None;
         }
+
+        let padded = n + (align - 1);
+
+        // PERF: adding the padding first here may waste some space,
+        // but it simplifies the logic and avoids a second atomic operation.
+        // The wasted space is at most `align - 1` bytes per allocation.
+        // In practice, this is not a big deal, as long as align is not too large.
+        // Typical align values are 1, 2, 4, 8. Larger align values are rare.
+        // This is a trade-off between memory-space and computation-time.
+        let new_size = self.position.fetch_add(padded, Ordering::SeqCst) + padded;
+        // PERF: position is left updated even on failed alloc,
+        // this is to prevent ABA problem in concurrent allocs.
+        // This is more performant than using a CAS-retry-loop.
+        if new_size > capacity {
+            // arena is out of memory
+            return None;
+        }
+
+        let align_mask = align - 1;
+        let aligned_offset = (original_size + align_mask) & !align_mask;
+
+        Some(aligned_offset)
     }
 
     pub fn reset(&mut self) {
-        self.position = 0.into();
+        self.position.store(0, Ordering::Relaxed);
     }
 
     /// Returns the current allocation position in the arena.
     /// This is the offset where the next allocation will occur,
     /// + distance to the alignment boundary if needed.
-    pub fn position(&self) -> u32 {
-        self.position.load(Ordering::Relaxed) as u32
+    pub fn position(&self) -> u64 {
+        self.position.load(Ordering::Relaxed)
     }
 
     /// Returns the total capacity of the arena in bytes.
-    pub fn capacity(&self) -> u32 {
-        self.buffer.len() as u32
+    pub fn capacity(&self) -> u64 {
+        self.buffer.len() as u64
     }
 
     /// Returns the remaining capacity in the arena in bytes.
     /// This is the number of bytes that can still be allocated.
     /// It is equal to `capacity() - position()`.
-    pub fn remaining_capacity(&self) -> u32 {
+    pub fn remaining_capacity(&self) -> u64 {
         self.capacity() - self.position()
     }
 
@@ -136,6 +107,7 @@ impl Arena {
     /// # Panics
     /// - if `offset` is out of bounds of the arena.
     pub fn offset_to_ptr(&self, offset: u64) -> *mut u8 {
+        trace!("Arena::offset_to_ptr: offset={}", offset);
         assert!(
             offset < self.buffer.len() as u64,
             "index {} out of range (capacity {})",
@@ -165,18 +137,6 @@ impl Arena {
         // SAFETY: checked that ptr is within bounds.
         unsafe { ptr.offset_from(base_ptr) as u64 }
     }
-
-    /// Returns true if all allocations have completed.
-    /// This means that the allocation count is zero.
-    pub fn allocations_complete(&self) -> bool {
-        self.allocation_count.load(Ordering::SeqCst) == 0
-    }
-
-    /// Prevents any further allocations in the arena.
-    /// There may still be ongoing allocations that will complete.
-    pub fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-    }
 }
 
 #[cfg(test)]
@@ -192,9 +152,73 @@ mod tests {
             arena.alloc(5, 1).unwrap();
             assert_eq!(arena.position(), 5);
             assert_eq!(arena.alloc(6, 1), None);
-            assert_eq!(arena.position(), 5); // position should remain unchanged
+            // position is increased even on failed alloc
+            // to prevent ABA problem in concurrent allocs
+            assert_eq!(arena.position(), 11);
+            assert_eq!(arena.alloc(1, 1), None);
+            // position is not increased, when alloc fails
+            // early, before fetch_add can be called
+            assert_eq!(arena.position(), 11);
+        };
+        exec(test);
+    }
+
+    #[test]
+    fn test_arena_alloc_zero() {
+        let test = || {
+            let arena = Arena::new(10);
+            let result = std::panic::catch_unwind(|| {
+                arena.alloc(0, 1);
+            });
+            assert!(result.is_err(), "should panic on zero allocation");
+        };
+        exec(test);
+    }
+
+    #[test]
+    #[should_panic(expected = "align must be a power of two")]
+    fn test_arena_alloc_non_power_of_two_align() {
+        let test = || {
+            let arena = Arena::new(10);
+            arena.alloc(5, 3);
+        };
+        exec(test);
+    }
+
+    #[test]
+    fn test_arena_reset() {
+        let test = || {
+            let mut arena = Arena::new(1024);
             arena.alloc(5, 1).unwrap();
-            assert_eq!(arena.position(), 10);
+            assert_eq!(arena.position(), 5);
+            arena.reset();
+            assert_eq!(arena.position(), 0);
+        };
+        exec(test);
+    }
+
+    #[test]
+    fn test_arena_offset_to_ptr() {
+        let test = || {
+            let arena = Arena::new(1024);
+            let offset = arena.alloc(4, 4).expect("alloc should succeed");
+            let ptr = arena.offset_to_ptr(offset) as *mut u32;
+            unsafe {
+                *ptr = 424242;
+                assert_eq!(*ptr, 424242);
+            }
+        };
+        exec(test);
+    }
+
+    #[test]
+    fn test_arena_offset_to_ptr_oob() {
+        let test = || {
+            let arena = Arena::new(10);
+            let result = std::panic::catch_unwind(|| {
+                let _ptr = arena.offset_to_ptr(10);
+            });
+            assert!(result.is_err(), "should panic on out of bounds access");
         };
         exec(test);
     }
@@ -205,14 +229,14 @@ mod tests {
             use crate::sync::Arc;
             use crate::thread;
 
-            let arena = Arc::new(Arena::new(1000));
+            let arena = Arc::new(Arena::new(1024 * 1024));
             let mut handles = vec![];
 
             for _ in 0..10 {
                 let arena = arena.clone();
                 let handle = thread::spawn(move || {
                     for _ in 0..100 {
-                        let offset = arena.alloc(5, 1).unwrap();
+                        let offset = arena.alloc(4, 4).unwrap();
                         let ptr = arena.offset_to_ptr(offset) as *mut u32;
                         unsafe {
                             *ptr = 424242;
@@ -227,63 +251,13 @@ mod tests {
                 handle.join().unwrap();
             }
 
-            assert_eq!(arena.position(), 500);
-        };
-        exec(test);
-    }
-
-    #[test]
-    #[should_panic(expected = "n must be greater than 0")]
-    fn test_arena_alloc_zero() {
-        let test = || {
-            let arena = Arena::new(10);
-            arena.alloc(0, 1).unwrap();
-        };
-        exec(test);
-    }
-
-    #[test]
-    #[should_panic(expected = "align must be a power of two")]
-    fn test_arena_alloc_non_power_of_two_align() {
-        let test = || {
-            let arena = Arena::new(10);
-            arena.alloc(5, 3).unwrap();
-        };
-        exec(test);
-    }
-
-    #[test]
-    fn test_arena_reset() {
-        let test = || {
-            let mut arena = Arena::new(10);
-            arena.alloc(5, 1).unwrap();
-            assert_eq!(arena.position(), 5);
-            arena.reset();
-            assert_eq!(arena.position(), 0);
-        };
-        exec(test);
-    }
-
-    #[test]
-    fn test_arena_ptr_at() {
-        let test = || {
-            let arena = Arena::new(10);
-            let offset = arena.alloc(4, 4).unwrap();
-            let ptr = arena.offset_to_ptr(offset) as *mut u32;
-            unsafe {
-                *ptr = 424242;
-                assert_eq!(*ptr, 424242);
-            }
-        };
-        exec(test);
-    }
-
-    #[test]
-    #[should_panic(expected = "index 10 out of range")]
-    fn test_arena_ptr_at_out_of_bounds() {
-        let test = || {
-            let arena = Arena::new(10);
-            let _ptr = arena.offset_to_ptr(10);
+            let minimum_size = 10 * 100 * 4;
+            assert!(
+                arena.position() >= minimum_size,
+                "all allocations should succeed and allocate at least {} bytes, got {}",
+                minimum_size,
+                arena.position()
+            );
         };
         exec(test);
     }
