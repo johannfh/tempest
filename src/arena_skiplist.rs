@@ -1,8 +1,4 @@
-use std::{
-    cell::UnsafeCell,
-    io::{Seek, SeekFrom},
-    sync::{Arc, atomic::AtomicU32},
-};
+use std::sync::{Arc, atomic::AtomicU32};
 
 use crate::arena::Arena;
 
@@ -57,6 +53,7 @@ impl ArenaSkiplist {
 
         // Initialize the skiplist with a head node at offset 0
         // The head node has maximum height and no key/value
+        trace!("Initializing skiplist head and tail nodes");
         let head = skip_list
             .insert_node_raw(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist head node, arena may be too small");
@@ -67,6 +64,13 @@ impl ArenaSkiplist {
             .insert_node_raw(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist tail node, arena may be too small");
         let tail_offset = skip_list.arena.ptr_to_offset(tail as *const u8);
+
+        trace!(
+            "Skiplist head node at offset {}, tail node at offset {}, total size {}",
+            head_offset,
+            tail_offset,
+            skip_list.arena.position(),
+        );
 
         let order = std::sync::atomic::Ordering::SeqCst;
 
@@ -156,16 +160,19 @@ impl ArenaSkiplist {
         value: &[u8],
     ) -> Result<*mut Node, InsertError> {
         assert!(height < MAX_HEIGHT, "height exceeds MAX_HEIGHT");
-        println!("Inserting node with height {}", height);
 
         let key_size = key.len() as u32;
         assert!(key_size < u32::MAX, "key size is too large");
         let value_size = value.len() as u32;
         assert!(value_size < u32::MAX, "value size is too large");
-        let combined_size = MAX_NODE_SIZE + key_size + value_size;
+        let combined_size = Node::expected_size(height, key_size, value_size);
         assert!(
             combined_size <= MAX_ARENA_SIZE as u32,
             "combined key and value size exceeds maximum allowed size"
+        );
+        trace!(
+            "Inserting node with height {}, key_size {}, value_size {}",
+            height, key_size, value_size
         );
 
         let node_ptr = self.insert_node_raw(height, key_size, value_size)?;
@@ -256,7 +263,7 @@ impl ArenaSkiplist {
         let tower_size = (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLinks>() as u32;
         let node_size = std::mem::size_of::<Node>() as u32 - tower_size; // Size of Node without unused tower links
         let total_size = node_size + key_size + value_size;
-        println!(
+        trace!(
             "Allocating node: height {}, key_size {}, value_size {}, total_size {}",
             height, key_size, value_size, total_size
         );
@@ -504,8 +511,6 @@ struct Node {
     tower: [NodeLinks; MAX_HEIGHT as usize], // Links for each level in the skiplist
 }
 
-const MAX_NODE_SIZE: u32 = std::mem::size_of::<Node>() as u32;
-
 impl Node {
     fn get_key(&self) -> &[u8] {
         // SAFETY: We assume that the arena is valid and that the data_offset
@@ -569,7 +574,7 @@ impl Node {
         let self_ptr = self as *const Node as *mut Node;
         let self_offset = arena.ptr_to_offset(self_ptr as *const u8) as u32;
 
-        println!(
+        trace!(
             "Linking node at height {}: self_offset {}, pred_offset {}, succ_offset {}",
             height, self_offset, pred_offset, succ_offset
         );
@@ -622,20 +627,36 @@ impl Node {
         // This works since failure here means another thread has inserted a node
         // between this node and succ between end of Phase 2 ('publish') and end of Phase 3.
         // In that case, the new node will eventually link to succ correctly.
-        let _ = succ_node.prev_offset_ptr(height).compare_exchange(
+        match succ_node.prev_offset_ptr(height).compare_exchange(
             pred_offset,
             self_offset,
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
-        );
-
-        // Linking succeeded
-        true
+        ) {
+            Ok(_) => {
+                // Linking succeeded
+                true
+            }
+            Err(actual) => {
+                // CAS failed, another thread modified succ's prev.
+                // This is less critical, we can ignore this failure.
+                warn!(
+                    "Linking succ's prev failed, actual prev_offset was {}, expected {}",
+                    actual, pred_offset
+                );
+                true
+            }
+        }
     }
 
-    //fn link_with(&self, height: u8, prev: u32, next: u32) -> bool {
-
-    //}
+    /// Calculates the expected size of a node given its height, key size, and value size,
+    /// when allocating it inside of the skiplist arena.
+    #[inline]
+    const fn expected_size(height: u8, key_size: u32, value_size: u32) -> u32 {
+        let tower_size = (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLinks>() as u32;
+        let node_size = std::mem::size_of::<Node>() as u32 - tower_size; // Size of Node without unused tower links
+        node_size + key_size + value_size
+    }
 }
 
 impl PartialEq for Node {
