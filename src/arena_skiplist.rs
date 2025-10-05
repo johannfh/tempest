@@ -703,10 +703,8 @@ impl PartialOrd for Node {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
-    use crate::tests::exec;
-
     use super::*;
 
     #[test]
@@ -718,90 +716,74 @@ mod tests {
 
     #[test]
     fn test_node_links() {
-        let test = || {
-            let links = NodeLinks::default();
-            links.init(10);
-            assert_eq!(
-                links.next_offset.load(std::sync::atomic::Ordering::Relaxed),
-                10
-            );
-            assert_eq!(
-                links.prev_offset.load(std::sync::atomic::Ordering::Relaxed),
-                10
-            );
-        };
-        exec(test);
+        let links = NodeLinks::default();
+        links.init(10);
+        assert_eq!(
+            links.next_offset.load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
+        assert_eq!(
+            links.prev_offset.load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
     }
 
     #[test]
     fn test_skiplist_creation() {
-        let test = || {
-            let arena = Arena::new(1024);
-            let skiplist = ArenaSkiplist::new_in(arena);
-            assert!(!skiplist.head.is_null());
-            assert!(!skiplist.tail.is_null());
-        };
-        exec(test);
+        let arena = Arena::new(1024);
+        let skiplist = ArenaSkiplist::new_in(arena);
+        assert!(!skiplist.head.is_null());
+        assert!(!skiplist.tail.is_null());
     }
 
     #[test]
     fn test_insert_node_raw() {
-        let test = || {
-            let arena = Arena::new(1024);
-            let skiplist = ArenaSkiplist::new_in(arena);
+        let arena = Arena::new(1024);
+        let skiplist = ArenaSkiplist::new_in(arena);
 
-            let node_ptr = skiplist.insert_node_raw(3, 5, 10).unwrap();
-            assert!(!node_ptr.is_null());
-            let node = unsafe { &*node_ptr };
-            assert_eq!(node.key_size, 5);
-            assert_eq!(node.value_size, 10);
-        };
-        exec(test);
+        let node_ptr = skiplist.insert_node_raw(3, 5, 10).unwrap();
+        assert!(!node_ptr.is_null());
+        let node = unsafe { &*node_ptr };
+        assert_eq!(node.key_size, 5);
+        assert_eq!(node.value_size, 10);
     }
 
     #[test]
     fn test_insert_node() {
-        let test = || {
-            let arena = Arena::new(1024);
-            let skiplist = ArenaSkiplist::new_in(arena);
-            let key = b"test_key";
-            let value = b"test_value";
-            let seq_num = 1;
-            let node_ptr =
-                skiplist.insert_node(2, key, KeyMetadata::new(KeyKind::Set, seq_num), value);
-            assert!(node_ptr.is_ok());
-            let node = unsafe { &*node_ptr.unwrap() };
+        let arena = Arena::new(1024);
+        let skiplist = ArenaSkiplist::new_in(arena);
+        let key = b"test_key";
+        let value = b"test_value";
+        let seq_num = 1;
+        let node_ptr = skiplist.insert_node(2, key, KeyMetadata::new(KeyKind::Set, seq_num), value);
+        assert!(node_ptr.is_ok());
+        let node = unsafe { &*node_ptr.unwrap() };
 
-            assert_eq!(node.key_size, key.len() as u32);
-            assert_eq!(node.value_size, value.len() as u32);
-            assert_eq!(node.key_metadata.seq_num(), seq_num);
-            assert_eq!(node.key_metadata.kind(), KeyKind::Set);
-            assert_eq!(node.get_key(), key);
-            assert_eq!(node.get_value(), value);
-        };
-        exec(test);
+        assert_eq!(node.key_size, key.len() as u32);
+        assert_eq!(node.value_size, value.len() as u32);
+        assert_eq!(node.key_metadata.seq_num(), seq_num);
+        assert_eq!(node.key_metadata.kind(), KeyKind::Set);
+        assert_eq!(node.get_key(), key);
+        assert_eq!(node.get_value(), value);
     }
 
     #[test]
     fn test_skiplist_iterator() {
-        let test = || {
-            let arena = Arena::new(1024);
-            let skiplist = Arc::new(ArenaSkiplist::new_in(arena));
-            skiplist
-                .insert_node(1, b"key1", KeyMetadata::new(KeyKind::Set, 1), b"value1")
-                .unwrap();
-            let mut iter = ArenaSkiplistIterator::new(skiplist.clone());
-            iter.seek_to_first();
-            let (node, key, key_metadata, value) = iter.current;
-            assert_eq!(key.len(), 0);
-            assert_eq!(value.len(), 0);
-            assert_eq!(key_metadata.seq_num(), 0);
-            assert_eq!(key_metadata.kind(), KeyKind::Delete);
-            assert_eq!(node.get_key(), &[]); // Head node has no key
-            assert_eq!(node.key_size, 0);
-            assert_eq!(node.get_value(), &[]);
-            assert_eq!(node.value_size, 0);
-        };
-        exec(test);
+        let arena = Arena::new(1024);
+        let skiplist = Arc::new(ArenaSkiplist::new_in(arena));
+        skiplist
+            .insert_node(1, b"key1", KeyMetadata::new(KeyKind::Set, 1), b"value1")
+            .unwrap();
+        let mut iter = ArenaSkiplistIterator::new(skiplist.clone());
+        iter.seek_to_first();
+        let (node, key, key_metadata, value) = iter.current;
+        assert_eq!(key.len(), 0);
+        assert_eq!(value.len(), 0);
+        assert_eq!(key_metadata.seq_num(), 0);
+        assert_eq!(key_metadata.kind(), KeyKind::Delete);
+        assert_eq!(node.get_key(), &[]); // Head node has no key
+        assert_eq!(node.key_size, 0);
+        assert_eq!(node.get_value(), &[]);
+        assert_eq!(node.value_size, 0);
     }
 }

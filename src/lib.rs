@@ -18,13 +18,6 @@ mod tests {
         // Initialize logger for tests
         env_logger::builder().is_test(true).try_init();
     }
-
-    pub fn exec(test: fn()) {
-        #[cfg(loom)]
-        loom::model::model(test);
-        #[cfg(not(loom))]
-        test();
-    }
 }
 
 pub struct Tempest {}

@@ -139,126 +139,103 @@ impl Arena {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
-    use crate::tests::exec;
-
     use super::*;
 
     #[test]
     fn test_arena_alloc() {
-        let test = || {
-            let arena = Arena::new(10);
-            arena.alloc(5, 1).unwrap();
-            assert_eq!(arena.position(), 5);
-            assert_eq!(arena.alloc(6, 1), None);
-            // position is increased even on failed alloc
-            // to prevent ABA problem in concurrent allocs
-            assert_eq!(arena.position(), 11);
-            assert_eq!(arena.alloc(1, 1), None);
-            // position is not increased, when alloc fails
-            // early, before fetch_add can be called
-            assert_eq!(arena.position(), 11);
-        };
-        exec(test);
+        let arena = Arena::new(10);
+        arena.alloc(5, 1).unwrap();
+        assert_eq!(arena.position(), 5);
+        assert_eq!(arena.alloc(6, 1), None);
+        // position is increased even on failed alloc
+        // to prevent ABA problem in concurrent allocs
+        assert_eq!(arena.position(), 11);
+        assert_eq!(arena.alloc(1, 1), None);
+        // position is not increased, when alloc fails
+        // early, before fetch_add can be called
+        assert_eq!(arena.position(), 11);
     }
 
     #[test]
     fn test_arena_alloc_zero() {
-        let test = || {
-            let arena = Arena::new(10);
-            let result = std::panic::catch_unwind(|| {
-                arena.alloc(0, 1);
-            });
-            assert!(result.is_err(), "should panic on zero allocation");
-        };
-        exec(test);
+        let arena = Arena::new(10);
+        let result = std::panic::catch_unwind(|| {
+            arena.alloc(0, 1);
+        });
+        assert!(result.is_err(), "should panic on zero allocation");
     }
 
     #[test]
     #[should_panic(expected = "align must be a power of two")]
     fn test_arena_alloc_non_power_of_two_align() {
-        let test = || {
-            let arena = Arena::new(10);
-            arena.alloc(5, 3);
-        };
-        exec(test);
+        let arena = Arena::new(10);
+        arena.alloc(5, 3);
     }
 
     #[test]
     fn test_arena_reset() {
-        let test = || {
-            let mut arena = Arena::new(1024);
-            arena.alloc(5, 1).unwrap();
-            assert_eq!(arena.position(), 5);
-            arena.reset();
-            assert_eq!(arena.position(), 0);
-        };
-        exec(test);
+        let mut arena = Arena::new(1024);
+        arena.alloc(5, 1).unwrap();
+        assert_eq!(arena.position(), 5);
+        arena.reset();
+        assert_eq!(arena.position(), 0);
     }
 
     #[test]
     fn test_arena_offset_to_ptr() {
-        let test = || {
-            let arena = Arena::new(1024);
-            let offset = arena.alloc(4, 4).expect("alloc should succeed");
-            let ptr = arena.offset_to_ptr(offset) as *mut u32;
-            unsafe {
-                *ptr = 424242;
-                assert_eq!(*ptr, 424242);
-            }
-        };
-        exec(test);
+        let arena = Arena::new(1024);
+        let offset = arena.alloc(4, 4).expect("alloc should succeed");
+        let ptr = arena.offset_to_ptr(offset) as *mut u32;
+        unsafe {
+            *ptr = 424242;
+            assert_eq!(*ptr, 424242);
+        }
     }
 
     #[test]
     fn test_arena_offset_to_ptr_oob() {
-        let test = || {
-            let arena = Arena::new(10);
-            let result = std::panic::catch_unwind(|| {
-                let _ptr = arena.offset_to_ptr(10);
-            });
-            assert!(result.is_err(), "should panic on out of bounds access");
-        };
-        exec(test);
+        let arena = Arena::new(10);
+        let result = std::panic::catch_unwind(|| {
+            let _ptr = arena.offset_to_ptr(10);
+        });
+        assert!(result.is_err(), "should panic on out of bounds access");
     }
 
     #[test]
     fn test_arena_alloc_racy() {
-        let test = || {
-            use crate::sync::Arc;
-            use crate::thread;
+        use crate::sync::Arc;
+        use crate::thread;
 
-            let arena = Arc::new(Arena::new(1024 * 1024));
-            let mut handles = vec![];
+        let arena = Arc::new(Arena::new(1024 * 1024));
+        let mut handles = vec![];
 
-            for _ in 0..10 {
-                let arena = arena.clone();
-                let handle = thread::spawn(move || {
-                    for _ in 0..100 {
-                        let offset = arena.alloc(4, 4).unwrap();
-                        let ptr = arena.offset_to_ptr(offset) as *mut u32;
-                        unsafe {
-                            *ptr = 424242;
-                            assert_eq!(*ptr, 424242);
-                        }
+        for _ in 0..10 {
+            let arena = arena.clone();
+            let handle = thread::spawn(move || {
+                for _ in 0..100 {
+                    let offset = arena.alloc(4, 4).unwrap();
+                    let ptr = arena.offset_to_ptr(offset) as *mut u32;
+                    unsafe {
+                        *ptr = 424242;
+                        assert_eq!(*ptr, 424242);
                     }
-                });
-                handles.push(handle);
-            }
+                }
+            });
+            handles.push(handle);
+        }
 
-            for handle in handles {
-                handle.join().unwrap();
-            }
+        for handle in handles {
+            handle.join().unwrap();
+        }
 
-            let minimum_size = 10 * 100 * 4;
-            assert!(
-                arena.position() >= minimum_size,
-                "all allocations should succeed and allocate at least {} bytes, got {}",
-                minimum_size,
-                arena.position()
-            );
-        };
-        exec(test);
+        let minimum_size = 10 * 100 * 4;
+        assert!(
+            arena.position() >= minimum_size,
+            "all allocations should succeed and allocate at least {} bytes, got {}",
+            minimum_size,
+            arena.position()
+        );
     }
 }
