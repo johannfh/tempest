@@ -57,6 +57,9 @@ impl Arena {
         // In practice, this is not a big deal, as long as align is not too large.
         // Typical align values are 1, 2, 4, 8. Larger align values are rare.
         // This is a trade-off between memory-space and computation-time.
+        // It is mainly an issue for lots of small allocations:
+        // When `align` is close or equal to `n`, we waste almost half of the allocated space
+        // (e.g. n=8, align=8 -> waste 8 bytes, as we always add 7 bytes of padding).
         let new_size = self.position.fetch_add(padded, Ordering::SeqCst) + padded;
         // PERF: position is left updated even on failed alloc,
         // this is to prevent ABA problem in concurrent allocs.
