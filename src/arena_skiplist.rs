@@ -9,7 +9,7 @@ use std::sync::{Arc, atomic::AtomicU32};
 // The skiplist is built on top of an `Arena`, which provides efficient
 // memory management by allocating a large contiguous block of memory upfront
 // and then carving out smaller pieces as needed.
-pub struct ArenaSkiplist {
+pub(crate) struct ArenaSkiplist {
     arena: Arena,
     head: *mut Node, // Pointer to the head node in the skiplist
     tail: *mut Node, // Pointer to the tail node in the skiplist
@@ -30,7 +30,7 @@ const MAX_HEIGHT: u8 = 12;
 const P: f64 = 0.25;
 
 #[derive(Debug)]
-pub enum InsertError {
+pub(crate) enum InsertError {
     /// Not enough memory in the arena to insert the node.
     /// The value is the number of bytes required.
     OutOfMemory(u32),
@@ -39,14 +39,14 @@ pub enum InsertError {
 impl ArenaSkiplist {
     /// Creates a new `ArenaSkiplist` with the given `Arena`.
     /// The arena's capacity must not exceed `MAX_ARENA_SIZE`.
-    pub fn new_in(arena: Arena) -> Self {
+    pub(crate) fn new_in(arena: Arena) -> Self {
         assert!(
             arena.capacity() as i32 <= MAX_ARENA_SIZE as i32,
             "Arena capacity exceeds maximum allowed size"
         );
 
         let mut skip_list = ArenaSkiplist {
-            arena: arena.into(),
+            arena,
             head: std::ptr::null_mut(),
             tail: std::ptr::null_mut(),
         };
@@ -97,7 +97,7 @@ impl ArenaSkiplist {
         skip_list
     }
 
-    pub fn insert(
+    pub(crate) fn insert(
         &mut self,
         key: &[u8],
         value: Option<&[u8]>,
@@ -201,9 +201,8 @@ impl ArenaSkiplist {
             node.tower[h as usize].init(0);
 
             let (pred_ptr, succ_ptr) = self.find_position_at_level(h, key);
-            // SAFETY: pred is guaranteed to be valid as long as the skiplist exists.
-            let pred = unsafe { &*pred_ptr };
-            let succ = unsafe { &*succ_ptr };
+            // SAFETY: pred and succ are guaranteed to be valid as long as the skiplist exists
+            let (pred, succ) = unsafe { (&*pred_ptr, &*succ_ptr) };
 
             assert!(
                 !pred_ptr.is_null() && !succ_ptr.is_null(),
@@ -235,10 +234,9 @@ impl ArenaSkiplist {
                     // Successfully linked at this level
                     break;
                 } else {
-                    // Retry linking if it failed due to concurrent modifications
-                    // In a real implementation, we would need to re-find pred and succ
-                    // Here we just panic for simplicity
-                    panic!(
+                    // TODO: Retry linking if it failed due to concurrent modifications
+                    // we will need to re-find pred and succ
+                    todo!(
                         "Failed to link node at level {}, retrying is not implemented",
                         h
                     );
@@ -307,7 +305,7 @@ impl ArenaSkiplist {
     }
 
     /// Discards the `ArenaSkiplist`, returning the underlying `Arena` for reuse.
-    pub fn discard(self) -> Arena {
+    pub(crate) fn discard(self) -> Arena {
         let mut arena = self.arena;
         arena.reset();
         arena
@@ -384,7 +382,7 @@ impl ArenaSkiplist {
 unsafe impl Send for ArenaSkiplist {}
 unsafe impl Sync for ArenaSkiplist {}
 
-pub struct ArenaSkiplistIterator<'a> {
+pub(crate) struct ArenaSkiplistIterator<'a> {
     skiplist: Arc<ArenaSkiplist>,
     level: u8,
     /// Current position in the skiplist, represented as a tuple of:
@@ -430,7 +428,7 @@ impl ArenaSkiplistIterator<'_> {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct KeyMetadata(u64);
+pub(crate) struct KeyMetadata(u64);
 
 impl KeyMetadata {
     fn new(kind: KeyKind, seq_num: u64) -> Self {
@@ -454,12 +452,12 @@ impl KeyMetadata {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum KeyKind {
+pub(crate) enum KeyKind {
     Delete = 0,
     Set = 1,
 }
 
-pub enum KeyKindFromRawError {
+pub(crate) enum KeyKindFromRawError {
     InvalidKeyKind,
 }
 
@@ -616,8 +614,8 @@ impl Node {
         let pred_ptr = arena.offset_to_ptr(pred_offset as u64) as *mut Node;
         let succ_ptr = arena.offset_to_ptr(succ_offset as u64) as *mut Node;
 
-        let pred_node = unsafe { &*pred_ptr };
-        let succ_node = unsafe { &*succ_ptr };
+        // SAFETY: pred_ptr and succ_ptr are guaranteed to be valid as long as the skiplist exists.
+        let (pred_node, succ_node) = unsafe { (&*pred_ptr, &*succ_ptr) };
 
         // Try to link pred's next to this node
         if pred_node
@@ -695,7 +693,7 @@ impl PartialEq for Node {
 
 impl PartialOrd for Node {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.get_key().cmp(&other.get_key()).then({
+        Some(self.get_key().cmp(other.get_key()).then({
             self.key_metadata
                 .seq_num()
                 .cmp(&other.key_metadata.seq_num())
