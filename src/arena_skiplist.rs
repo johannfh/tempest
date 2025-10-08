@@ -200,46 +200,45 @@ impl ArenaSkiplist {
             // initialize to 0
             node.tower[h as usize].init(0);
 
-            let (pred_ptr, succ_ptr) = self.find_position_at_level(h, key);
-            // SAFETY: pred and succ are guaranteed to be valid as long as the skiplist exists
-            let (pred, succ) = unsafe { (&*pred_ptr, &*succ_ptr) };
-
-            assert!(
-                !pred_ptr.is_null() && !succ_ptr.is_null(),
-                "pred and succ must be valid"
-            );
-            assert!(
-                pred_ptr != succ_ptr,
-                "pred and succ must be different nodes"
-            );
-
-            // Ensure the new node's key is between pred/head and succ/tail
-            assert!(
-                pred.get_key() < key, // no need for &[] as &[] is less than any key
-                "pred key must be less than new key or pred is head"
-            );
-            assert!(
-                succ.get_key() > key || succ.get_key() == &[] as &[u8],
-                "succ key must be greater than new key or succ is tail"
-            );
-
-            // Link the new node between pred and succ at level i
             loop {
+                let (pred_ptr, succ_ptr) = self.find_position_at_level(h, key);
+                // SAFETY: pred and succ are guaranteed to be valid as long as the skiplist exists
+                let (pred, succ) = unsafe { (&*pred_ptr, &*succ_ptr) };
+
+                assert!(
+                    !pred_ptr.is_null() && !succ_ptr.is_null(),
+                    "pred and succ must be valid"
+                );
+                assert!(
+                    pred_ptr != succ_ptr,
+                    "pred and succ must be different nodes"
+                );
+
+                // Ensure the new node's key is between pred/head and succ/tail
+                assert!(
+                    pred.get_key() < key, // no need for &[] as &[] is less than any key
+                    "pred key must be less than new key or pred is head"
+                );
+                assert!(
+                    succ.get_key() > key || succ.get_key() == &[] as &[u8],
+                    "succ key must be greater than new key or succ is tail"
+                );
+
+                // Link the new node between pred and succ at current level
                 if node.link_with(
                     &self.arena,
                     h,
                     self.arena.ptr_to_offset(pred_ptr as *const u8) as u32,
                     self.arena.ptr_to_offset(succ_ptr as *const u8) as u32,
                 ) {
-                    // Successfully linked at this level
+                    // Successfully linked at this level, continue to next level
                     break;
                 } else {
-                    // TODO: Retry linking if it failed due to concurrent modifications
-                    // we will need to re-find pred and succ
-                    todo!(
-                        "Failed to link node at level {}, retrying is not implemented",
+                    warn!(
+                        "Failed to link node at level {}, retrying linking process",
                         h
                     );
+                    continue;
                 }
             }
         }
@@ -579,6 +578,10 @@ impl Node {
     /// - `height`: The height at which to link the nodes.
     /// - `pred`: The offset of the predecessor node.
     /// - `succ`: The offset of the successor node.
+    ///
+    /// # Returns
+    /// - true if linking was successful
+    /// - false if linking failed and should be retried
     fn link_with(&self, arena: &Arena, height: u8, pred_offset: u32, succ_offset: u32) -> bool {
         let self_ptr = self as *const Node as *mut Node;
         let self_offset = arena.ptr_to_offset(self_ptr as *const u8) as u32;
