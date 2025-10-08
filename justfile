@@ -9,7 +9,7 @@ help:
 test: test-base test-loom
 
 test-base:
-    RUST_LOG=trace \
+    RUST_LOG=debug \
         cargo test --workspace
 
 test-loom:
@@ -18,5 +18,5 @@ test-loom:
         LOOM_LOCATION=1 \
         LOOM_CHECKPOINT_INTERVAL=1 \
         LOOM_CHECKPOINT_FILE=./loom-checkpoint.json \
-        RUST_LOG=trace \
+        RUST_LOG=debug \
         cargo test --workspace
