@@ -185,12 +185,10 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "index 10 out of range")]
     fn test_arena_offset_to_ptr_oob() {
         let arena = Arena::new(10);
-        let result = std::panic::catch_unwind(|| {
-            let _ptr = arena.offset_to_ptr(10);
-        });
-        assert!(result.is_err(), "should panic on out of bounds access");
+        let _ptr = arena.offset_to_ptr(10);
     }
 
     #[test]
