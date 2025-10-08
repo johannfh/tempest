@@ -1,6 +1,6 @@
 use crate::arena::Arena;
 
-use crate::sync::{Arc, atomic::AtomicU32};
+use std::sync::{Arc, atomic::AtomicU32};
 
 // An arena-based skiplist implementation.
 // It is designed to store key-value pairs in an append-only manner,
@@ -703,7 +703,7 @@ impl PartialOrd for Node {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

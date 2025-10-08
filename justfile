@@ -6,17 +6,6 @@ help:
     @echo "  test-loom   Run loom tests with detailed logging and loom configuration"
 
 
-test: test-base test-loom
-
-test-base:
+test:
     RUST_LOG=debug \
-        cargo test --workspace
-
-test-loom:
-    RUSTFLAGS="--cfg loom" \
-        LOOM_LOG=debug \
-        LOOM_LOCATION=1 \
-        LOOM_CHECKPOINT_INTERVAL=1 \
-        LOOM_CHECKPOINT_FILE=./loom-checkpoint.json \
-        RUST_LOG=debug \
         cargo test --workspace

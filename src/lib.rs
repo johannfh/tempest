@@ -1,8 +1,5 @@
 #![allow(dead_code)]
 
-mod sync;
-mod thread;
-
 pub mod arena;
 pub mod arena_skiplist;
 

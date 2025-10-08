@@ -1,4 +1,4 @@
-use crate::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct Arena {
     buffer: Box<[u8]>,
@@ -142,7 +142,7 @@ impl Arena {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn test_arena_alloc_racy() {
-        use crate::sync::Arc;
-        use crate::thread;
+        use std::sync::Arc;
+        use std::thread;
 
         let arena = Arc::new(Arena::new(1024 * 1024));
         let mut handles = vec![];
