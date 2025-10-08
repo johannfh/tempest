@@ -55,7 +55,7 @@ impl ArenaSkiplist {
         // The head node has maximum height and no key/value
         trace!("Initializing skiplist head and tail nodes");
         let head_ptr = skip_list
-            .insert_node_raw(MAX_HEIGHT, 0, 0)
+            .allocate_node(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist head node, arena may be too small");
         skip_list.head = head_ptr;
         let head_offset = skip_list.arena.ptr_to_offset(head_ptr as *const u8);
@@ -63,7 +63,7 @@ impl ArenaSkiplist {
         let head = unsafe { &*head_ptr };
 
         let tail_ptr = skip_list
-            .insert_node_raw(MAX_HEIGHT, 0, 0)
+            .allocate_node(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist tail node, arena may be too small");
         let tail_offset = skip_list.arena.ptr_to_offset(tail_ptr as *const u8);
         // SAFETY: We must not access `tail.tower` beyond `MAX_HEIGHT`.
@@ -98,7 +98,7 @@ impl ArenaSkiplist {
     }
 
     pub(crate) fn insert(
-        &mut self,
+        &self,
         key: &[u8],
         value: Option<&[u8]>,
         seq_num: u64,
@@ -122,7 +122,7 @@ impl ArenaSkiplist {
     }
 
     fn insert_set(
-        &mut self,
+        &self,
         key: &[u8],
         value: &[u8],
         seq_num: u64,
@@ -147,7 +147,7 @@ impl ArenaSkiplist {
         );
     }
 
-    fn insert_delete(&mut self, key: &[u8], seq_num: u64, height: u8) -> Result<(), InsertError> {
+    fn insert_delete(&self, key: &[u8], seq_num: u64, height: u8) -> Result<(), InsertError> {
         // Implementation for inserting a delete marker
         todo!(
             "insert_delete is not yet implemented, key: {:?}, seq_num: {}, height: {}",
@@ -180,7 +180,7 @@ impl ArenaSkiplist {
             height, key_size, value_size
         );
 
-        let node_ptr = self.insert_node_raw(height, key_size, value_size)?;
+        let node_ptr = self.allocate_node(height, key_size, value_size)?;
 
         // SAFETY: We must not access `node.tower` beyond `height`.
         let node = unsafe { &mut (*node_ptr) };
@@ -262,7 +262,7 @@ impl ArenaSkiplist {
     ///
     /// # Safety
     /// The caller must not access `node.tower` beyond `height`.
-    fn insert_node_raw(
+    fn allocate_node(
         &self,
         height: u8,
         key_size: u32,
@@ -427,7 +427,7 @@ impl ArenaSkiplistIterator<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub(crate) struct KeyMetadata(u64);
 
@@ -518,7 +518,20 @@ struct Node {
 
     _padding: [u8; 4], // Padding to align the next field to 8 bytes
 
-    tower: [NodeLinks; MAX_HEIGHT as usize], // Links for each level in the skiplist
+    /// This contains the links for each level in the skiplist,
+    /// or rather reduces the need of raw pointer arithmetics
+    /// through C-style fixed-length arrays, where array[i]
+    /// in T[] corresponds to (&array) + size_of(T) * i.
+    ///
+    /// While the length is technically always equal to `MAX_HEIGHT`,
+    /// meaning you could access up to node.tower[MAX_HEIGHT - 1],
+    /// arbitrary access could lead to data corruption in the arena.
+    /// The height is known during initialization/linking, where
+    /// it is randomly generated, and when searching the list, where
+    /// the height slowly decrements, with the `covariant`, that a link
+    /// on height X from node A to B means, that B.tower will be at least
+    /// X links tall.
+    tower: [NodeLinks; MAX_HEIGHT as usize],
 }
 
 impl Node {
@@ -661,13 +674,14 @@ impl Node {
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
         ) {
-            Ok(_) => {
-                // Linking succeeded
-                true
-            }
+            // NOTE: Linking succeeded! All four links are connected
+            Ok(_) => true,
             Err(actual) => {
-                // CAS failed, another thread modified succ's prev.
+                // NOTE: CAS failed, another thread modified succ's prev.
                 // This is less critical, we can ignore this failure.
+                // It occurs, when another Node finishes linkage between
+                // succ and this node, after this node completed stage 2,
+                // but before completing stage 3.
                 warn!(
                     "Linking succ's prev failed, actual prev_offset was {}, expected {}",
                     actual, pred_offset
@@ -681,20 +695,20 @@ impl Node {
     /// when allocating it inside of the skiplist arena.
     #[inline]
     const fn expected_size(height: u8, key_size: u32, value_size: u32) -> u32 {
-        let tower_size = (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLinks>() as u32;
-        let node_size = std::mem::size_of::<Node>() as u32 - tower_size; // Size of Node without unused tower links
+        let tower_size_remain =
+            (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLinks>() as u32;
+        let node_size = std::mem::size_of::<Node>() as u32 - tower_size_remain; // Size of Node without unused tower links
         node_size + key_size + value_size
     }
 }
 
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
-        self.key_metadata.0 == other.key_metadata.0
-            && self.key_size == other.key_size
-            && self.value_size == other.value_size
-            && self.data_offset == other.data_offset
+        self.key_metadata.eq(&other.key_metadata)
     }
 }
+
+impl Eq for Node {}
 
 impl PartialOrd for Node {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -740,11 +754,11 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_node_raw() {
+    fn test_allocate_node() {
         let arena = Arena::new(1024);
         let skiplist = ArenaSkiplist::new_in(arena);
 
-        let node_ptr = skiplist.insert_node_raw(3, 5, 10).unwrap();
+        let node_ptr = skiplist.allocate_node(3, 5, 10).unwrap();
         assert!(!node_ptr.is_null());
         let node = unsafe { &*node_ptr };
         assert_eq!(node.key_size, 5);
