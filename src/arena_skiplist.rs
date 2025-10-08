@@ -378,7 +378,9 @@ impl ArenaSkiplist {
     }
 }
 
+// SAFETY: Arena is safe to insert and read from concurrently without blocking
 unsafe impl Send for ArenaSkiplist {}
+// SAFETY: Arena is safe to insert and read from concurrently without blocking
 unsafe impl Sync for ArenaSkiplist {}
 
 pub(crate) struct ArenaSkiplistIterator<'a> {
