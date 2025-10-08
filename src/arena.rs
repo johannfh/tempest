@@ -43,36 +43,28 @@ impl Arena {
             align
         );
 
-        let capacity = self.buffer.len() as u64;
-        let original_size = self.position();
-        if original_size > capacity {
-            return None;
-        }
-
-        let padded = n + (align - 1);
-
-        // PERF: adding the padding first here may waste some space,
-        // but it simplifies the logic and avoids a second atomic operation.
-        // The wasted space is at most `align - 1` bytes per allocation.
-        // In practice, this is not a big deal, as long as align is not too large.
-        // Typical align values are 1, 2, 4, 8. Larger align values are rare.
-        // This is a trade-off between memory-space and computation-time.
-        // It is mainly an issue for lots of small allocations:
-        // When `align` is close or equal to `n`, we waste almost half of the allocated space
-        // (e.g. n=8, align=8 -> waste 8 bytes, as we always add 7 bytes of padding).
-        let new_size = self.position.fetch_add(padded, Ordering::SeqCst) + padded;
-        // PERF: position is left updated even on failed alloc,
-        // this is to prevent ABA problem in concurrent allocs.
-        // This is more performant than using a CAS-retry-loop.
-        if new_size > capacity {
-            // arena is out of memory
-            return None;
-        }
-
         let align_mask = align - 1;
-        let aligned_offset = (original_size + align_mask) & !align_mask;
+        let capacity = self.buffer.len() as u64;
 
-        Some(aligned_offset)
+        loop {
+            let old_pos = self.position();
+            let aligned_pos = (old_pos + (align - 1)) & !align_mask;
+            let new_pos = aligned_pos.checked_add(n)?;
+
+            // return early if we are out of memory
+            if new_pos > capacity {
+                return None;
+            }
+
+            // try to update the position atomically
+            if self
+                .position
+                .compare_exchange_weak(old_pos, new_pos, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Some(aligned_pos);
+            }
+        }
     }
 
     pub fn reset(&mut self) {
@@ -151,23 +143,18 @@ mod tests {
         let arena = Arena::new(10);
         arena.alloc(5, 1).unwrap();
         assert_eq!(arena.position(), 5);
-        assert_eq!(arena.alloc(6, 1), None);
-        // position is increased even on failed alloc
-        // to prevent ABA problem in concurrent allocs
-        assert_eq!(arena.position(), 11);
-        assert_eq!(arena.alloc(1, 1), None);
-        // position is not increased, when alloc fails
-        // early, before fetch_add can be called
-        assert_eq!(arena.position(), 11);
+        arena.alloc(4, 1).unwrap();
+        // position is not updated on failed alloc
+        assert_eq!(arena.position(), 9);
+        // 11 > 10, should fail
+        assert!(arena.alloc(2, 1).is_none());
     }
 
     #[test]
+    #[should_panic(expected = "n must be greater than 0")]
     fn test_arena_alloc_zero() {
         let arena = Arena::new(10);
-        let result = std::panic::catch_unwind(|| {
-            arena.alloc(0, 1);
-        });
-        assert!(result.is_err(), "should panic on zero allocation");
+        arena.alloc(0, 1);
     }
 
     #[test]
