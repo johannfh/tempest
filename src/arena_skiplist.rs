@@ -435,7 +435,7 @@ pub struct KeyMetadata(u64);
 impl KeyMetadata {
     fn new(kind: KeyKind, seq_num: u64) -> Self {
         // PERF: This assert can be removed if we are sure that the input is always valid.
-        assert!(seq_num <= (1 << 56) - 1, "seq_num must be <= 2^56 - 1");
+        assert!(seq_num < (1 << 56), "seq_num must be < 2^56");
         Self((seq_num << 8) | (kind as u64))
     }
 
