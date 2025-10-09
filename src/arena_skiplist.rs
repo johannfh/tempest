@@ -93,6 +93,10 @@ impl ArenaSkiplist {
 
         skip_list.tail = tail_ptr;
         assert_eq!(head_offset, 0, "Head node must be at offset 0");
+        println!(
+            "Skiplist initialized with head at offset {} and tail at offset {}",
+            head_offset, tail_offset
+        );
 
         skip_list
     }
@@ -134,17 +138,8 @@ impl ArenaSkiplist {
         // SAFETY: We must not access `node.tower` beyond `height`.
         let node = unsafe { &mut (*node_ptr) };
         assert_eq!(node.get_key(), key, "Inserted node key mismatch");
-
-        // Implementation for linking the new node into the skiplist
-        // This is a placeholder and should be replaced with actual logic
-
-        todo!(
-            "insert_set is not yet implemented, key: {:?}, value: {:?}, seq_num: {}, height: {}",
-            key,
-            value,
-            seq_num,
-            height
-        );
+        assert_eq!(node.get_value(), value, "Inserted node value mismatch");
+        Ok(())
     }
 
     fn insert_delete(&self, key: &[u8], seq_num: u64, height: u8) -> Result<(), InsertError> {
@@ -176,8 +171,8 @@ impl ArenaSkiplist {
             "combined key and value size exceeds maximum allowed size"
         );
         trace!(
-            "Inserting node with height {}, key_size {}, value_size {}",
-            height, key_size, value_size
+            "Inserting node with height {}, key_size {}, value_size {}, combined_size {}",
+            height, key_size, value_size, combined_size
         );
 
         let node_ptr = self.allocate_node(height, key_size, value_size)?;

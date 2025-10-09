@@ -32,20 +32,22 @@ impl Tempest {
         let arena = Arena::new(1024 * 1024 * 16); // 16 MiB
         Tempest {
             skiplist: ArenaSkiplist::new_in(arena),
-            seqnum: 0,
+            seqnum: 1.into(),
         }
     }
 
     fn get_seqnum(&self) -> u64 {
-        self.seqnum.fetch_add(1, Ordering::Relaxed);
+        self.seqnum.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn set(&self, key: &[u8], value: Option<&[u8]>) {
         let seqnum = self.get_seqnum();
-        self.skiplist.insert(key, value, seqnum);
+        self.skiplist
+            .insert(key, value, seqnum)
+            .expect("insert failed, oom?");
     }
 
-    pub fn get(&self, key: &[u8]) -> &[u8] {
-        todo!()
+    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
+        todo!("get not implemented yet")
     }
 }

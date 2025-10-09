@@ -32,10 +32,6 @@ impl Arena {
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
     pub(crate) fn alloc(&self, n: u64, align: u64) -> Option<u64> {
-        println!("Arena address: {:p}", self as *const Self);
-        println!("Arena::alloc: n={}, align={}", n, align);
-        println!("Arena buffer address: {:p}", self.buffer.as_ptr());
-
         assert!(n > 0, "n must be greater than 0");
         assert!(
             align.is_power_of_two(),
@@ -62,6 +58,10 @@ impl Arena {
                 .compare_exchange_weak(old_pos, new_pos, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
+                println!(
+                    "allocated: n={}, align={}, offset={}, new_pos={}",
+                    n, align, aligned_pos, new_pos
+                );
                 return Some(aligned_pos);
             }
         }
