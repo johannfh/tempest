@@ -1,8 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+pub(crate) const MAX_ARENA_SIZE: u32 = u32::MAX;
 
 pub(crate) struct Arena {
     buffer: Box<[u8]>,
-    position: AtomicU64,
+    position: AtomicU32,
 }
 
 impl Arena {
@@ -31,7 +33,7 @@ impl Arena {
     /// # Panics
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
-    pub(crate) fn alloc(&self, n: u64, align: u64) -> Option<u64> {
+    pub(crate) fn alloc(&self, n: u32, align: u32) -> Option<u32> {
         assert!(n > 0, "n must be greater than 0");
         assert!(
             align.is_power_of_two(),
@@ -40,7 +42,7 @@ impl Arena {
         );
 
         let align_mask = align - 1;
-        let capacity = self.buffer.len() as u64;
+        let capacity = self.capacity();
 
         loop {
             let old_pos = self.position();
@@ -58,9 +60,17 @@ impl Arena {
                 .compare_exchange_weak(old_pos, new_pos, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                println!(
-                    "allocated: n={}, align={}, offset={}, new_pos={}",
-                    n, align, aligned_pos, new_pos
+                let remaining_capacity = capacity - new_pos;
+
+                trace!(
+                    size = n,
+                    align,
+                    old_pos,
+                    aligned_pos,
+                    new_pos,
+                    capacity,
+                    remaining_capacity,
+                    "allocated memory in arena",
                 );
                 return Some(aligned_pos);
             }
@@ -74,19 +84,19 @@ impl Arena {
     /// Returns the current allocation position in the arena.
     /// This is the offset where the next allocation will occur,
     /// + distance to the alignment boundary if needed.
-    pub(crate) fn position(&self) -> u64 {
+    pub(crate) fn position(&self) -> u32 {
         self.position.load(Ordering::Relaxed)
     }
 
     /// Returns the total capacity of the arena in bytes.
-    pub(crate) fn capacity(&self) -> u64 {
-        self.buffer.len() as u64
+    pub(crate) fn capacity(&self) -> u32 {
+        self.buffer.len() as u32
     }
 
     /// Returns the remaining capacity in the arena in bytes.
     /// This is the number of bytes that can still be allocated.
     /// It is equal to `capacity() - position()`.
-    pub(crate) fn remaining_capacity(&self) -> u64 {
+    pub(crate) fn remaining_capacity(&self) -> u32 {
         self.capacity() - self.position()
     }
 
@@ -101,10 +111,9 @@ impl Arena {
     ///
     /// # Panics
     /// - if `offset` is out of bounds of the arena.
-    pub(crate) fn offset_to_ptr(&self, offset: u64) -> *mut u8 {
-        trace!("Arena::offset_to_ptr: offset={}", offset);
+    pub(crate) fn offset_to_ptr(&self, offset: u32) -> *mut u8 {
         assert!(
-            offset < self.buffer.len() as u64,
+            offset < self.buffer.len() as u32,
             "index {} out of range (capacity {})",
             offset,
             self.buffer.len()
@@ -117,7 +126,7 @@ impl Arena {
     ///
     /// # Panics
     /// - if `ptr` is not within bounds
-    pub(crate) fn ptr_to_offset(&self, ptr: *const u8) -> u64 {
+    pub(crate) fn ptr_to_offset(&self, ptr: *const u8) -> u32 {
         assert!(
             ptr >= self.buffer.as_ptr()
                 // SAFETY: performing ptr arithmetic within the bounds of the buffer
@@ -129,7 +138,7 @@ impl Arena {
         let base_ptr = self.buffer.as_ptr();
 
         // SAFETY: checked that ptr is within bounds.
-        unsafe { ptr.offset_from(base_ptr) as u64 }
+        unsafe { ptr.offset_from(base_ptr) as u32 }
     }
 }
 

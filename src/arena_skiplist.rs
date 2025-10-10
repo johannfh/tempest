@@ -1,6 +1,12 @@
 use crate::arena::Arena;
 
-use std::sync::{Arc, atomic::AtomicU32};
+use std::{
+    cmp,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 // An arena-based skiplist implementation.
 // It is designed to store key-value pairs in an append-only manner,
@@ -11,8 +17,8 @@ use std::sync::{Arc, atomic::AtomicU32};
 // and then carving out smaller pieces as needed.
 pub(crate) struct ArenaSkiplist {
     arena: Arena,
-    head: *mut Node, // Pointer to the head node in the skiplist
-    tail: *mut Node, // Pointer to the tail node in the skiplist
+    head_offset: u32,
+    tail_offset: u32,
 }
 
 /// Maximum size of the arena, limited by both `isize::MAX` and `i32::MAX`.
@@ -26,8 +32,8 @@ const MAX_ARENA_SIZE: usize = {
 const MAX_HEIGHT: u8 = 12;
 
 /// Probability factor for determining node height in the skiplist.
-/// Typically set to 0.25 (1 in 4 chance to increase height).
-const P: f64 = 0.25;
+/// set to 0.5 (1 in 2 chance to increase height).
+const P: f64 = 0.5;
 
 #[derive(Debug)]
 pub(crate) enum InsertError {
@@ -45,60 +51,64 @@ impl ArenaSkiplist {
             "Arena capacity exceeds maximum allowed size"
         );
 
-        let mut skip_list = ArenaSkiplist {
+        let arena_capacity = arena.capacity();
+
+        let mut skiplist = ArenaSkiplist {
             arena,
-            head: std::ptr::null_mut(),
-            tail: std::ptr::null_mut(),
+            head_offset: 0,
+            tail_offset: 0,
         };
 
         // Initialize the skiplist with a head node at offset 0
         // The head node has maximum height and no key/value
-        trace!("Initializing skiplist head and tail nodes");
-        let head_ptr = skip_list
+        trace!(arena_capacity, "initializing skiplist head and tail nodes");
+        let (head, head_offset) = skiplist
             .allocate_node(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist head node, arena may be too small");
-        skip_list.head = head_ptr;
-        let head_offset = skip_list.arena.ptr_to_offset(head_ptr as *const u8);
-        // SAFETY: We must not access `head.tower` beyond `MAX_HEIGHT`.
-        let head = unsafe { &*head_ptr };
 
-        let tail_ptr = skip_list
+        // Initialize the skiplist with a tail node at offset 0 + sizeof(head)
+        // The tail node has maximum height an no key/value
+        let (tail, tail_offset) = skiplist
             .allocate_node(MAX_HEIGHT, 0, 0)
             .expect("Failed to initialize skiplist tail node, arena may be too small");
-        let tail_offset = skip_list.arena.ptr_to_offset(tail_ptr as *const u8);
-        // SAFETY: We must not access `tail.tower` beyond `MAX_HEIGHT`.
-        let tail = unsafe { &*tail_ptr };
-
-        trace!(
-            "Skiplist head node at offset {}, tail node at offset {}, total size {}",
-            head_offset,
-            tail_offset,
-            skip_list.arena.position(),
-        );
-
-        let order = std::sync::atomic::Ordering::SeqCst;
 
         // Link head with tail at all levels
-        for height in 0..MAX_HEIGHT {
-            head.tower[height as usize].init(0);
-            tail.tower[height as usize].init(0);
-
-            head.tower[height as usize]
-                .next_offset
-                .store(tail_offset as u32, order);
-            tail.tower[height as usize]
-                .prev_offset
-                .store(head_offset as u32, order);
+        // [head] <- head -> [tail]
+        // [head] <- tail -> [tail]
+        for height in 1..=MAX_HEIGHT as usize {
+            // head -> [tail]
+            head.tower[height - 1].set_next(&skiplist, tail);
+            // [head] <- head
+            head.tower[height - 1].set_prev(&skiplist, head);
+            // tail -> [tail]
+            tail.tower[height - 1].set_next(&skiplist, tail);
+            // [head] <- tail
+            tail.tower[height - 1].set_prev(&skiplist, head);
         }
 
-        skip_list.tail = tail_ptr;
-        assert_eq!(head_offset, 0, "Head node must be at offset 0");
-        println!(
-            "Skiplist initialized with head at offset {} and tail at offset {}",
-            head_offset, tail_offset
+        skiplist.head_offset = head_offset;
+        skiplist.tail_offset = tail_offset;
+
+        assert_eq!(head_offset, 0, "Head node should be at offset 0");
+        trace!(
+            head_offset,
+            tail_offset,
+            arena_position = skiplist.arena.position(),
+            arena_capacity = skiplist.arena.capacity(),
+            "skiplist initialized"
         );
 
-        skip_list
+        skiplist
+    }
+
+    fn head(&self) -> &Node {
+        // SAFETY: The skiplist head is guaranteed to be valid as long as the skiplist exists.
+        unsafe { &*(self.arena.offset_to_ptr(self.head_offset) as *const Node) }
+    }
+
+    fn tail(&self) -> &Node {
+        // SAFETY: The skiplist tail is guaranteed to be valid as long as the skiplist exists.
+        unsafe { &*(self.arena.offset_to_ptr(self.tail_offset) as *const Node) }
     }
 
     pub(crate) fn insert(
@@ -112,12 +122,14 @@ impl ArenaSkiplist {
         // Determine the height of the new node using a probabilistic method.
         // Each level has a probability `P` of being included, up to `MAX_HEIGHT`
         let height = {
-            let mut h = 0;
-            while h < MAX_HEIGHT - 1 && rand::random::<f64>() < P {
+            let mut h = 1;
+            while h < MAX_HEIGHT && rand::random::<f64>() < P {
                 h += 1;
             }
             h
         };
+
+        assert!(height > 0);
 
         match value {
             Some(v) => self.insert_set(key, v, seq_num, height),
@@ -133,10 +145,8 @@ impl ArenaSkiplist {
         height: u8,
     ) -> Result<(), InsertError> {
         let key_metadata = KeyMetadata::new(KeyKind::Set, seq_num);
-        let node_ptr = self.insert_node(height, key, key_metadata, value)?;
+        let node = self.insert_node(height, key, key_metadata, value)?;
 
-        // SAFETY: We must not access `node.tower` beyond `height`.
-        let node = unsafe { &mut (*node_ptr) };
         assert_eq!(node.get_key(), key, "Inserted node key mismatch");
         assert_eq!(node.get_value(), value, "Inserted node value mismatch");
         Ok(())
@@ -158,8 +168,13 @@ impl ArenaSkiplist {
         key: &[u8],
         key_metadata: KeyMetadata,
         value: &[u8],
-    ) -> Result<*mut Node, InsertError> {
-        assert!(height < MAX_HEIGHT, "height exceeds MAX_HEIGHT");
+    ) -> Result<&Node, InsertError> {
+        assert!(height <= MAX_HEIGHT, "height exceeds MAX_HEIGHT");
+        assert!(
+            height > 0,
+            "height must be in range 1..=MAX_HEIGHT, got: {}",
+            height
+        );
 
         let key_size = key.len() as u32;
         assert!(key_size < u32::MAX, "key size is too large");
@@ -170,20 +185,14 @@ impl ArenaSkiplist {
             combined_size <= MAX_ARENA_SIZE as u32,
             "combined key and value size exceeds maximum allowed size"
         );
-        trace!(
-            "Inserting node with height {}, key_size {}, value_size {}, combined_size {}",
-            height, key_size, value_size, combined_size
-        );
 
-        let node_ptr = self.allocate_node(height, key_size, value_size)?;
-
-        // SAFETY: We must not access `node.tower` beyond `height`.
-        let node = unsafe { &mut (*node_ptr) };
+        let (node, _node_offset) = self.allocate_node(height, key_size, value_size)?;
+        let node_ptr = node as *const Node;
 
         // SAFETY: We have just allocated enough space for the key and value
         // at `node.data_offset`, so this pointer is valid.
         unsafe {
-            let key_ptr = (node as *mut Node as *mut u8).add(node.data_offset as usize);
+            let key_ptr = (node_ptr as *mut u8).add(node.data_offset as usize);
             let value_ptr = key_ptr.add(key.len());
             std::ptr::copy_nonoverlapping(key.as_ptr(), key_ptr, key.len());
             std::ptr::copy_nonoverlapping(value.as_ptr(), value_ptr, value.len());
@@ -191,40 +200,36 @@ impl ArenaSkiplist {
 
         node.key_metadata = key_metadata;
 
-        for h in 0..height {
+        for h in 1..=height {
             // initialize to 0
-            node.tower[h as usize].init(0);
+            node.tower[h as usize - 1].init(0);
 
             loop {
-                let (pred_ptr, succ_ptr) = self.find_position_at_level(h, key);
-                // SAFETY: pred and succ are guaranteed to be valid as long as the skiplist exists
-                let (pred, succ) = unsafe { (&*pred_ptr, &*succ_ptr) };
+                let (pred, succ) = self.find_position_at_level(h, key_metadata.seq_num(), key);
+                let pred_ptr = pred as *const Node;
+                let succ_ptr = succ as *const Node;
 
                 assert!(
-                    !pred_ptr.is_null() && !succ_ptr.is_null(),
-                    "pred and succ must be valid"
-                );
-                assert!(
-                    pred_ptr != succ_ptr,
+                    pred as *const Node != succ as *const Node,
                     "pred and succ must be different nodes"
                 );
 
                 // Ensure the new node's key is between pred/head and succ/tail
                 assert!(
-                    pred.get_key() < key, // no need for &[] as &[] is less than any key
-                    "pred key must be less than new key or pred is head"
+                    pred.get_key() <= key, // no need for &[] as &[] is less than any key
+                    "pred key must be <= to new key or pred is head"
                 );
                 assert!(
-                    succ.get_key() > key || succ.get_key() == &[] as &[u8],
-                    "succ key must be greater than new key or succ is tail"
+                    succ.get_key() >= key || succ.get_key() == &[] as &[u8],
+                    "succ key must be >= to new key or succ is tail"
                 );
 
                 // Link the new node between pred and succ at current level
                 if node.link_with(
                     &self.arena,
                     h,
-                    self.arena.ptr_to_offset(pred_ptr as *const u8) as u32,
-                    self.arena.ptr_to_offset(succ_ptr as *const u8) as u32,
+                    self.arena.ptr_to_offset(pred_ptr as *const u8),
+                    self.arena.ptr_to_offset(succ_ptr as *const u8),
                 ) {
                     // Successfully linked at this level, continue to next level
                     break;
@@ -238,7 +243,7 @@ impl ArenaSkiplist {
             }
         }
 
-        Ok(node_ptr)
+        Ok(node)
     }
 
     // Inserts a new node into the arena and returns a pointer to it.
@@ -252,7 +257,7 @@ impl ArenaSkiplist {
     // - `value_size`: The size of the value in bytes.
     //
     // # Returns
-    // - `Ok(*mut Node)`: A pointer to the newly allocated node in the arena.
+    // - `Ok((*mut Node, u32)`: A pointer to the newly allocated node and its offset in the arena.
     // - `Err(InsertError)`: If there is not enough memory in the arena.
     ///
     /// # Safety
@@ -262,28 +267,26 @@ impl ArenaSkiplist {
         height: u8,
         key_size: u32,
         value_size: u32,
-    ) -> Result<*mut Node, InsertError> {
+    ) -> Result<(&mut Node, u32), InsertError> {
         let tower_size = (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLinks>() as u32;
         let node_size = std::mem::size_of::<Node>() as u32 - tower_size; // Size of Node without unused tower links
         let total_size = node_size + key_size + value_size;
-        trace!(
-            "Allocating node: height {}, key_size {}, value_size {}, total_size {}",
-            height, key_size, value_size, total_size
-        );
+        trace!(height, key_size, value_size, total_size, "allocating node");
 
         // Allocate space for the node and its key/value in the arena
-        let arena_offset = self
+        let node_offset = self
             .arena
-            .alloc(total_size as u64, 8)
+            .alloc(total_size, 8)
             .ok_or(InsertError::OutOfMemory(total_size))?;
 
         // SAFETY: We have just allocated `total_size` bytes at `arena_offset`,
         // giving us a valid pointer into the arena buffer.
-        let node_ptr = self.arena.offset_to_ptr(arena_offset) as *mut Node;
+        let node_ptr = self.arena.offset_to_ptr(node_offset) as *mut Node;
 
         // SAFETY: We must not access `node.tower` beyond `height`.
         let node = unsafe { &mut *node_ptr };
-        node.data_offset = arena_offset as u32 + node_size;
+
+        node.data_offset = node_offset + node_size;
         node.key_size = key_size;
         node.value_size = value_size;
 
@@ -295,7 +298,63 @@ impl ArenaSkiplist {
         //todo!("Linking the new node into the skiplist is not yet implemented");
 
         // Return the pointer to the newly allocated node
-        Ok(node_ptr)
+        Ok((node, node_offset))
+    }
+
+    pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
+        assert!(!key.is_empty(), "Key must not be empty");
+
+        self.find_node(key).map(|node| node.get_value())
+    }
+
+    /// Finds a node with the given key in the skiplist.
+    ///
+    /// # Arguments
+    /// - `key`: The key to search for.
+    ///
+    /// # Returns
+    /// - `Some(&Node)`: A reference to the node if found. Valid as long as the skiplist exists.
+    /// - `None`: If the key is not found.
+    ///
+    /// # Panics
+    /// - If the key is empty.
+    fn find_node(&self, key: &[u8]) -> Option<&Node> {
+        assert!(!key.is_empty(), "Key must not be empty");
+        // SAFETY: The skiplist head is guaranteed to be valid as long as the skiplist exists.
+        let mut current = self.head();
+
+        for level in (1..=MAX_HEIGHT).rev() {
+            loop {
+                let next_offset = current.next_offset(level);
+                let next_ptr = self.arena.offset_to_ptr(next_offset) as *const Node;
+
+                if next_ptr == self.tail() {
+                    // Reached the end of this level, move down
+                    break;
+                }
+
+                // SAFETY: next_ptr is guaranteed to be valid as long as the skiplist exists.
+                let next = unsafe { &*next_ptr };
+
+                match next.get_key().cmp(key) {
+                    std::cmp::Ordering::Less => {
+                        // Move right at the same level
+                        current = next;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        // Found the key
+                        return Some(next);
+                    }
+                    std::cmp::Ordering::Greater => {
+                        // Move down one level
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Key not found
+        None
     }
 
     /// Discards the `ArenaSkiplist`, returning the underlying `Arena` for reuse.
@@ -305,27 +364,25 @@ impl ArenaSkiplist {
         arena
     }
 
-    fn find_position_at_level(&self, height: u8, key: &[u8]) -> (*mut Node, *mut Node) {
-        // find the correct position to insert the new node
-        // and link it into the skiplist
-        let tail_offset = self.arena.ptr_to_offset(self.tail as *const u8) as u32;
+    fn find_position_at_level(&self, height: u8, seqnum: u64, key: &[u8]) -> (&Node, &Node) {
+        trace!(
+            height,
+            seqnum,
+            key = String::from_utf8_lossy(key).as_ref(),
+            "finding correct position for insert"
+        );
+        let mut current = self.head();
+        let mut current_height = MAX_HEIGHT;
 
-        let mut current_ptr = self.head;
-        let mut current_height = MAX_HEIGHT - 1;
-
-        let pred: *mut Node;
-        let succ: *mut Node;
+        let pred: &Node;
+        let succ: &Node;
 
         loop {
-            // SAFETY: current is guaranteed to be valid as long as the skiplist exists.
-            let current: &Node = unsafe { &*current_ptr };
-
-            let next_offset = current.next_offset(current_height);
-            if next_offset == tail_offset {
+            if current as *const Node == self.tail() as *const Node {
                 if current_height == height {
                     // Reached the target height, return between current and tail
-                    pred = current_ptr;
-                    succ = self.tail;
+                    pred = current;
+                    succ = self.tail();
                     break;
                 } else {
                     // Move down one level to find precise position
@@ -334,31 +391,45 @@ impl ArenaSkiplist {
                 }
             }
 
-            let next_ptr = self.arena.offset_to_ptr(next_offset as u64) as *mut Node;
+            let next_offset = current.next_offset(current_height);
+
+            let next_ptr = self.arena.offset_to_ptr(next_offset) as *const Node;
 
             // SAFETY: next_ptr is guaranteed to be valid as long as the skiplist exists.
             let next: &Node = unsafe { &*next_ptr };
 
-            match next.get_key().cmp(key) {
+            // first sort by key
+            match next
+                .get_key()
+                .cmp(key)
+                // then by sequence number, with highest (newest) first
+                .then_with(|| {
+                    trace!(
+                        this_key = key,
+                        next_key = next.get_key(),
+                        this_seqnum = &seqnum,
+                        next_seqnum = next.key_metadata.seq_num(),
+                        "keys equal, sorting by seqnums",
+                    );
+                    next.key_metadata.seq_num().cmp(&seqnum).reverse()
+                }) {
                 std::cmp::Ordering::Less => {
                     // Move right at the same level
-                    current_ptr = next_ptr;
+                    current = next;
                 }
                 std::cmp::Ordering::Equal => {
-                    if current_height == height {
-                        // TODO: panic here? this is just finding, maybe check and panic in insert?
-                        panic!("Duplicate key insertion is not allowed in this skiplist");
-                    } else {
-                        // Move down one level to find precise position
-                        current_height -= 1;
-                        continue;
-                    }
+                    // TODO: panic here? this is just finding, maybe check and panic in insert?
+                    panic!(
+                        "duplicate key insertion is not allowed in this skiplist, key: {}, seqnum: {}",
+                        String::from_utf8_lossy(key),
+                        seqnum
+                    );
                 }
                 std::cmp::Ordering::Greater => {
                     // Found the position to insert before `next`
-                    if current_height == 0 {
-                        pred = current_ptr;
-                        succ = next_ptr;
+                    if current_height == height {
+                        pred = current;
+                        succ = next;
                         break;
                     } else {
                         // Move down one level to find precise position
@@ -373,52 +444,43 @@ impl ArenaSkiplist {
     }
 }
 
+impl std::fmt::Debug for ArenaSkiplist {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArenaSkiplist")
+            .field("max_height", &MAX_HEIGHT)
+            .field("p", &P)
+            // TODO: arena
+            // TODO:.field("head", &self.head())
+            // TODO: .field("tail", &self.tail())
+            // TODO: contents
+            .finish()
+    }
+}
+
 // SAFETY: Arena is safe to insert and read from concurrently without blocking
 unsafe impl Send for ArenaSkiplist {}
 // SAFETY: Arena is safe to insert and read from concurrently without blocking
 unsafe impl Sync for ArenaSkiplist {}
 
 pub(crate) struct ArenaSkiplistIterator<'a> {
-    skiplist: Arc<ArenaSkiplist>,
-    level: u8,
+    skiplist: &'a ArenaSkiplist,
+    height: u8,
     /// Current position in the skiplist, represented as a tuple of:
     /// `(node_ptr, key, key_metadata, value)`.
-    current: (&'a Node, &'a [u8], KeyMetadata, &'a [u8]),
+    current: &'a Node,
 }
 
 impl ArenaSkiplistIterator<'_> {
-    fn new<'a>(skiplist: Arc<ArenaSkiplist>) -> ArenaSkiplistIterator<'a> {
-        // SAFETY: The skiplist head is guaranteed to be valid as long as the skiplist exists.
-        let head = unsafe { &*skiplist.head };
-        let key = &[];
-        let value = &[];
-        let key_metadata = head.key_metadata;
-
-        ArenaSkiplistIterator {
-            skiplist,
-            level: 0,
-            current: (head, key, key_metadata, value),
-        }
-    }
-
     fn seek_to_ge(&mut self, _target: &[u8]) -> (&'_ Node, &'_ [u8], KeyMetadata, &'_ [u8]) {
-        // SAFETY: The skiplist head is guaranteed to be valid as long as the skiplist exists.
-        let head = unsafe { &*self.skiplist.head };
-        self.current = (head, &[], head.key_metadata, &[]);
-
         todo!("seek_to_ge is not yet implemented");
     }
 
     fn seek_to_first(&mut self) {
-        // SAFETY: The skiplist head is guaranteed to be valid as long as the skiplist exists.
-        let head = unsafe { &*self.skiplist.head };
-        self.current = (head, &[], head.key_metadata, &[]);
+        self.current = self.skiplist.head();
     }
 
     fn seek_to_last(&mut self) {
-        // SAFETY: The skiplist tail is guaranteed to be valid as long as the skiplist exists.
-        let tail = unsafe { &*self.skiplist.tail };
-        self.current = (tail, &[], tail.key_metadata, &[]);
+        self.current = self.skiplist.tail();
     }
 }
 
@@ -478,10 +540,22 @@ struct NodeLinks {
 
 impl NodeLinks {
     fn init(&self, value: u32) {
-        self.next_offset
-            .store(value, std::sync::atomic::Ordering::Relaxed);
-        self.prev_offset
-            .store(value, std::sync::atomic::Ordering::Relaxed);
+        self.next_offset.store(value, Ordering::Relaxed);
+        self.prev_offset.store(value, Ordering::Relaxed);
+    }
+
+    fn set_prev(&self, skiplist: &ArenaSkiplist, node: &Node) {
+        let prev_offset = skiplist
+            .arena
+            .ptr_to_offset(node as *const Node as *const u8);
+        self.prev_offset.store(prev_offset, Ordering::Relaxed);
+    }
+
+    fn set_next(&self, skiplist: &ArenaSkiplist, node: &Node) {
+        let next_offset = skiplist
+            .arena
+            .ptr_to_offset(node as *const Node as *const u8);
+        self.next_offset.store(next_offset, Ordering::Relaxed);
     }
 }
 
@@ -549,32 +623,43 @@ impl Node {
         }
     }
 
+    fn set_prev(&self, height: u8, skiplist: ArenaSkiplist, node: &Node) {
+        self.tower[height as usize - 1].set_prev(&skiplist, node);
+    }
+
+    fn set_next(&self, height: u8, skiplist: ArenaSkiplist, node: &Node) {
+        self.tower[height as usize - 1].set_next(&skiplist, node);
+    }
+
     /// Retrieves the absolute offset to the previous node at the given height in the arena.
     /// If there is no previous node, offset is own offset.
     #[inline]
     fn prev_offset(&self, height: u8) -> u32 {
-        self.next_offset_ptr(height)
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.next_offset_ptr(height).load(Ordering::Relaxed)
     }
 
     /// Retrieves the offset to the next node at the given height.
     /// If there is no next node, returns 0.
     #[inline]
     fn next_offset(&self, height: u8) -> u32 {
-        self.next_offset_ptr(height)
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.next_offset_ptr(height).load(Ordering::Relaxed)
     }
 
     /// Returns a pointer to the `next_offset` atomic for the given height.
     #[inline]
     const fn next_offset_ptr(&self, height: u8) -> &AtomicU32 {
-        &self.tower[height as usize].next_offset
+        assert!(height > 0, "height must be in range 1..=MAX_HEIGHT",);
+        &self.tower[height as usize - 1].next_offset
     }
 
     /// Returns a pointer to the `prev_offset` atomic for the given height.
     #[inline]
     const fn prev_offset_ptr(&self, height: u8) -> &AtomicU32 {
-        &self.tower[height as usize].prev_offset
+        assert!(
+            height > 0 && height <= MAX_HEIGHT,
+            "height must be in range 1..=MAX_HEIGHT"
+        );
+        &self.tower[height as usize - 1].prev_offset
     }
 
     /// Links this node with the given predecessor and successor at the specified height.
@@ -593,7 +678,12 @@ impl Node {
     /// - true if linking was successful
     /// - false if linking failed and should be retried
     fn link_with(&self, arena: &Arena, height: u8, pred_offset: u32, succ_offset: u32) -> bool {
-        let self_ptr = self as *const Node as *mut Node;
+        assert!(
+            height > 0,
+            "height must be in range 1..=MAX_HEIGHT, got: {}",
+            height
+        );
+        let self_ptr = self as *const Node;
         let self_offset = arena.ptr_to_offset(self_ptr as *const u8) as u32;
         trace!(
             "Linking node at height {}: self_offset {}, pred_offset {}, succ_offset {}",
@@ -606,9 +696,9 @@ impl Node {
         // Else, other threads may see a partially linked node, resulting in
         // incorrect traversal behavior.
         self.prev_offset_ptr(height)
-            .store(pred_offset, std::sync::atomic::Ordering::SeqCst);
+            .store(pred_offset, Ordering::SeqCst);
         self.next_offset_ptr(height)
-            .store(succ_offset, std::sync::atomic::Ordering::SeqCst);
+            .store(succ_offset, Ordering::SeqCst);
         trace!(
             "Prepared node at height {}: self_offset {}, prev_offset {}, next_offset {}",
             height,
@@ -624,8 +714,8 @@ impl Node {
         // We must use compare-and-swap (CAS) operations to ensure that
         // we do not overwrite changes made by other threads.
         // SAFETY: We assume that pred and succ are valid offsets within the arena.
-        let pred_ptr = arena.offset_to_ptr(pred_offset as u64) as *mut Node;
-        let succ_ptr = arena.offset_to_ptr(succ_offset as u64) as *mut Node;
+        let pred_ptr = arena.offset_to_ptr(pred_offset) as *mut Node;
+        let succ_ptr = arena.offset_to_ptr(succ_offset) as *mut Node;
 
         // SAFETY: pred_ptr and succ_ptr are guaranteed to be valid as long as the skiplist exists.
         let (pred_node, succ_node) = unsafe { (&*pred_ptr, &*succ_ptr) };
@@ -633,12 +723,7 @@ impl Node {
         // Try to link pred's next to this node
         if pred_node
             .next_offset_ptr(height)
-            .compare_exchange(
-                succ_offset,
-                self_offset,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
+            .compare_exchange(succ_offset, self_offset, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             // CAS failed, another thread modified pred's next, we need to abort and retry
@@ -666,8 +751,8 @@ impl Node {
         match succ_node.prev_offset_ptr(height).compare_exchange(
             pred_offset,
             self_offset,
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
         ) {
             // NOTE: Linking succeeded! All four links are connected
             Ok(_) => true,
@@ -708,19 +793,27 @@ impl Eq for Node {}
 impl PartialOrd for Node {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.get_key().cmp(other.get_key()).then({
+            // if keys are equal, compare by seq_num in descending order
+            // this means that higher seq_num (newer) comes first, so the
+            // newest version of a key is found and returned first during search
             self.key_metadata
                 .seq_num()
                 .cmp(&other.key_metadata.seq_num())
+                .reverse()
         }))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::init;
+
     use super::*;
 
     #[test]
     fn test_key_metadata() {
+        init!();
+
         let km = KeyMetadata::new(KeyKind::Set, 42);
         assert_eq!(km.kind(), KeyKind::Set);
         assert_eq!(km.seq_num(), 42);
@@ -728,6 +821,8 @@ mod tests {
 
     #[test]
     fn test_node_links() {
+        init!();
+
         let links = NodeLinks::default();
         links.init(10);
         assert_eq!(
@@ -741,35 +836,28 @@ mod tests {
     }
 
     #[test]
-    fn test_skiplist_creation() {
-        let arena = Arena::new(1024);
-        let skiplist = ArenaSkiplist::new_in(arena);
-        assert!(!skiplist.head.is_null());
-        assert!(!skiplist.tail.is_null());
-    }
-
-    #[test]
     fn test_allocate_node() {
+        init!();
+
         let arena = Arena::new(1024);
         let skiplist = ArenaSkiplist::new_in(arena);
-
-        let node_ptr = skiplist.allocate_node(3, 5, 10).unwrap();
-        assert!(!node_ptr.is_null());
-        let node = unsafe { &*node_ptr };
+        let (node, _node_offset) = skiplist.allocate_node(3, 5, 10).unwrap();
         assert_eq!(node.key_size, 5);
         assert_eq!(node.value_size, 10);
     }
 
     #[test]
     fn test_insert_node() {
+        init!();
+
         let arena = Arena::new(1024);
         let skiplist = ArenaSkiplist::new_in(arena);
         let key = b"test_key";
         let value = b"test_value";
         let seq_num = 1;
-        let node_ptr = skiplist.insert_node(2, key, KeyMetadata::new(KeyKind::Set, seq_num), value);
-        assert!(node_ptr.is_ok());
-        let node = unsafe { &*node_ptr.unwrap() };
+        let node = skiplist
+            .insert_node(2, key, KeyMetadata::new(KeyKind::Set, seq_num), value)
+            .unwrap();
 
         assert_eq!(node.key_size, key.len() as u32);
         assert_eq!(node.value_size, value.len() as u32);
@@ -779,8 +867,10 @@ mod tests {
         assert_eq!(node.get_value(), value);
     }
 
-    #[test]
+    /*#[test]
     fn test_skiplist_iterator() {
+        init!();
+
         let arena = Arena::new(1024);
         let skiplist = Arc::new(ArenaSkiplist::new_in(arena));
         skiplist
@@ -797,5 +887,13 @@ mod tests {
         assert_eq!(node.key_size, 0);
         assert_eq!(node.get_value(), &[]);
         assert_eq!(node.value_size, 0);
+    }*/
+
+    #[test]
+    fn test_node_expected_size() {
+        init!();
+
+        let result = Node::expected_size(1, 0, 0);
+        assert_eq!(result, 32, "smallest node size must be 32, got: {}", result);
     }
 }

@@ -9,18 +9,7 @@ pub mod arena;
 pub mod arena_skiplist;
 
 #[macro_use]
-extern crate log;
-
-#[cfg(test)]
-mod tests {
-    use ctor::ctor;
-
-    #[ctor]
-    fn init() {
-        // Initialize logger for tests
-        env_logger::builder().is_test(true).try_init();
-    }
-}
+extern crate tracing;
 
 pub struct Tempest {
     skiplist: arena_skiplist::ArenaSkiplist,
@@ -41,6 +30,12 @@ impl Tempest {
     }
 
     pub fn set(&self, key: &[u8], value: Option<&[u8]>) {
+        trace!(
+            key = String::from_utf8_lossy(key).as_ref(),
+            value = String::from_utf8_lossy(key).as_ref(),
+            "setting key-value pair in tempest, skiplist: {:?}",
+            self.skiplist,
+        );
         let seqnum = self.get_seqnum();
         self.skiplist
             .insert(key, value, seqnum)
@@ -48,6 +43,74 @@ impl Tempest {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        todo!("get not implemented yet")
+        self.skiplist.get(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[macro_export]
+    macro_rules! init {
+        () => {
+            let _tracing_default_guard = tracing::subscriber::set_default(
+                tracing_subscriber::fmt::Subscriber::builder()
+                    .with_test_writer()
+                    .with_max_level(tracing::Level::TRACE)
+                    .finish(),
+            );
+        };
+    }
+
+    use super::*;
+
+    #[test]
+    fn test_tempest_set_get_simple() {
+        init!();
+
+        let tempest = Tempest::new();
+        let key1 = b"key1";
+        let value1 = b"value1";
+        tempest.set(key1, Some(value1));
+        assert_eq!(tempest.get(key1).unwrap(), value1);
+    }
+
+    #[test]
+    fn test_tempest_set_get_modify() {
+        init!();
+
+        let tempest = Tempest::new();
+        let key = b"key";
+        let value1 = b"value1";
+        tempest.set(key, Some(value1));
+        let key_value1 = tempest.get(key).unwrap();
+        assert_eq!(
+            key_value1,
+            value1,
+            "expected: key={}, got: key={}",
+            String::from_utf8_lossy(value1),
+            String::from_utf8_lossy(key_value1)
+        );
+
+        let value2 = b"value2";
+        tempest.set(key, Some(value2));
+        let key_value2 = tempest.get(key).unwrap();
+        assert_eq!(
+            key_value2,
+            value2,
+            "expected: key={}, got: key={}",
+            String::from_utf8_lossy(value2),
+            String::from_utf8_lossy(key_value2)
+        );
+
+        let value3 = b"value1";
+        tempest.set(key, Some(value3));
+        let key_value3 = tempest.get(key).unwrap();
+        assert_eq!(
+            key_value3,
+            value3,
+            "expected: key={}, got: key={}",
+            String::from_utf8_lossy(value3),
+            String::from_utf8_lossy(key_value3)
+        );
     }
 }
