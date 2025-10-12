@@ -77,18 +77,21 @@ impl Arena {
         }
     }
 
+    #[inline]
     pub(crate) fn reset(&mut self) {
-        self.position.store(0, Ordering::Relaxed);
+        self.position.store(0, Ordering::SeqCst);
     }
 
     /// Returns the current allocation position in the arena.
     /// This is the offset where the next allocation will occur,
     /// + distance to the alignment boundary if needed.
+    #[inline]
     pub(crate) fn position(&self) -> u32 {
-        self.position.load(Ordering::Relaxed)
+        self.position.load(Ordering::SeqCst)
     }
 
     /// Returns the total capacity of the arena in bytes.
+    #[inline]
     pub(crate) fn capacity(&self) -> u32 {
         self.buffer.len() as u32
     }
@@ -96,6 +99,7 @@ impl Arena {
     /// Returns the remaining capacity in the arena in bytes.
     /// This is the number of bytes that can still be allocated.
     /// It is equal to `capacity() - position()`.
+    #[inline]
     pub(crate) fn remaining_capacity(&self) -> u32 {
         self.capacity() - self.position()
     }
@@ -111,6 +115,7 @@ impl Arena {
     ///
     /// # Panics
     /// - if `offset` is out of bounds of the arena.
+    #[inline]
     pub(crate) fn offset_to_ptr(&self, offset: u32) -> *mut u8 {
         assert!(
             offset < self.buffer.len() as u32,
@@ -126,6 +131,7 @@ impl Arena {
     ///
     /// # Panics
     /// - if `ptr` is not within bounds
+    #[inline]
     pub(crate) fn ptr_to_offset(&self, ptr: *const u8) -> u32 {
         assert!(
             ptr >= self.buffer.as_ptr()
@@ -139,6 +145,62 @@ impl Arena {
 
         // SAFETY: checked that ptr is within bounds.
         unsafe { ptr.offset_from(base_ptr) as u32 }
+    }
+
+    pub(crate) fn ref_to_offset<T>(&self, r: &T) -> u32 {
+        self.ptr_to_offset(r as *const T as *const u8)
+    }
+
+    pub(crate) fn offset_to_ref<T>(&self, offset: u32) -> &T {
+        self.get(offset)
+    }
+
+    pub(crate) fn offset_to_ref_mut<T>(&self, offset: u32) -> &mut T {
+        self.get_mut(offset)
+    }
+
+    /// Returns a reference to a value of type `T` at the given offset.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `offset` is within bounds of the arena.
+    #[inline]
+    pub(crate) fn get<T: Sized>(&self, offset: u32) -> &T {
+        let ptr = self.offset_to_ptr(offset) as *const T;
+        // SAFETY: Caller must ensure offset is within bounds when using
+        unsafe { &*ptr }
+    }
+
+    /// Returns a mutable reference to a value of type `T` at the given offset.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `offset` is within bounds of the arena.
+    #[inline]
+    pub(crate) fn get_mut<T: Sized>(&self, offset: u32) -> &mut T {
+        let ptr = self.offset_to_ptr(offset) as *mut T;
+        // SAFETY: Caller must ensure offset is within bounds when using
+        unsafe { &mut *ptr }
+    }
+
+    /// Returns a byte slice of length `len` at the given offset.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `offset + len` is within bounds of the arena.
+    #[inline]
+    pub(crate) fn get_slice(&self, offset: u32, len: u32) -> &[u8] {
+        let ptr = self.offset_to_ptr(offset);
+        // SAFETY: Caller must ensure offset is within bounds when using
+        unsafe { std::slice::from_raw_parts(ptr, len as usize) }
+    }
+
+    /// Returns a mutable byte slice of length `len` at the given offset.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `offset + len` is within bounds of the arena.
+    #[inline]
+    pub(crate) fn get_slice_mut(&self, offset: u32, len: u32) -> &mut [u8] {
+        let ptr = self.offset_to_ptr(offset);
+        // SAFETY: Caller must ensure offset is within bounds when using
+        unsafe { std::slice::from_raw_parts_mut(ptr, len as usize) }
     }
 }
 
@@ -233,5 +295,63 @@ mod tests {
             minimum_size,
             arena.position()
         );
+    }
+
+    #[test]
+    fn test_arena_get() {
+        let arena = Arena::new(1024);
+        let offset = arena.alloc(4, 4).unwrap();
+        let ptr = arena.offset_to_ptr(offset) as *mut u32;
+        // manually write to the allocated memory
+        unsafe {
+            *ptr = 123456;
+        }
+        // now read it back using get
+        let value: &u32 = arena.get(offset);
+        assert_eq!(*value, 123456);
+    }
+
+    #[test]
+    fn test_arena_get_mut() {
+        let arena = Arena::new(1024);
+        let offset = arena.alloc(4, 4).unwrap();
+        let value: &mut u32 = arena.get_mut(offset);
+        for i in 0..=4000 {
+            // write a different value each iteration
+            let val = i * 4 + 1 - i / 3;
+            *value = val;
+            assert_eq!(*value, val);
+        }
+    }
+
+    #[test]
+    fn test_arena_get_slice() {
+        let arena = Arena::new(1024);
+        let offset = arena.alloc(10, 1).unwrap();
+        let slice = arena.get_slice(offset, 10);
+        assert_eq!(slice.len(), 10);
+        for i in 0..10 {
+            assert_eq!(slice[i], 0);
+        }
+        let slice_mut = arena.get_slice_mut(offset, 10);
+        for i in 0..10 {
+            slice_mut[i] = i as u8;
+        }
+        let slice = arena.get_slice(offset, 10);
+        for i in 0..10 {
+            assert_eq!(slice[i], i as u8);
+        }
+    }
+
+    #[test]
+    fn test_arena_ref_to_offset_and_back() {
+        let arena = Arena::new(1024);
+        let offset = arena.alloc(4, 4).unwrap();
+        let value: &mut u32 = arena.get_mut(offset);
+        *value = 987654;
+        let offset2 = arena.ref_to_offset(value);
+        assert_eq!(offset, offset2);
+        let value2: &u32 = arena.offset_to_ref(offset2);
+        assert_eq!(*value, *value2);
     }
 }
