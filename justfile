@@ -7,6 +7,7 @@ help:
 
 test:
     RUST_LOG=debug \
+        TRACE_LEVEL=trace \
         cargo test --workspace
 
 clippy:

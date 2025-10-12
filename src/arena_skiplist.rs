@@ -64,15 +64,15 @@ impl From<u8> for KeyKind {
 pub(crate) struct KeyTrailer(u64);
 
 impl KeyTrailer {
-    fn new(seqnum: u64, kind: KeyKind) -> Self {
+    pub(crate) fn new(seqnum: u64, kind: KeyKind) -> Self {
         Self(seqnum << 8 | (kind as u64))
     }
 
-    fn seqnum(&self) -> u64 {
+    pub(crate) fn seqnum(&self) -> u64 {
         self.0 >> 8
     }
 
-    fn kind(&self) -> KeyKind {
+    pub(crate) fn kind(&self) -> KeyKind {
         KeyKind::from((self.0 & 0xff) as u8)
     }
 }
@@ -559,6 +559,23 @@ impl ArenaSkiplist {
         self.insert_impl(key, key_trailer, value, height)
     }
 
+    pub(crate) fn get(&self, key: &[u8]) -> Option<(KeyTrailer, &[u8])> {
+        let mut iter = self.iter(u64::MAX);
+        // find key
+        iter.seek_to_key(key).descend_to_bottom();
+
+        while let Some((k, kt, v)) = iter.next() {
+            if k == key {
+                return Some((kt, v));
+            } else if k > key {
+                // since the skiplist is sorted, we can stop searching
+                break;
+            }
+        }
+
+        None
+    }
+
     /// Returns an iterator over the skiplist, starting from the head node.
     /// The iterator will return nodes with a sequence number less than or equal to `seqnum`.
     /// This allows for snapshot reads, commonly found in MVCC systems.
@@ -574,7 +591,6 @@ impl ArenaSkiplist {
     fn debug(&self, height: u8) {
         assert!(height > 0 && height <= MAX_HEIGHT, "invalid height");
         let mut current_offset = self.head_offset;
-        let mut index = 0;
         loop {
             if current_offset == self.head_offset {
                 print!("{:>3}: [HEAD]", height);
@@ -593,7 +609,6 @@ impl ArenaSkiplist {
                 String::from_utf8_lossy(next.key()),
             );
             current_offset = next_offset;
-            index += 1;
         }
         println!();
     }
