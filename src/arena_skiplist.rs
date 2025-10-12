@@ -195,6 +195,19 @@ impl Node {
             std::ptr::copy_nonoverlapping(value.as_ptr(), dst, self.value_size as usize);
         }
     }
+
+    #[inline]
+    fn prev_node<'a>(&self, skiplist: &'a ArenaSkiplist, height: u8) -> (&'a Node, u32) {
+        let prev_offset = self.prev(height);
+        (skiplist.arena.get::<Node>(prev_offset), prev_offset)
+    }
+
+    /// Returns the next node and its offset at the given height.
+    #[inline]
+    fn next_node<'a>(&self, skiplist: &'a ArenaSkiplist, height: u8) -> (&'a Node, u32) {
+        let next_offset = self.next(height);
+        (skiplist.arena.get::<Node>(next_offset), next_offset)
+    }
 }
 
 #[derive(Debug)]
@@ -602,14 +615,92 @@ pub(crate) struct Iter<'a> {
 }
 
 impl<'a> Iter<'a> {
-    pub(crate) fn seek_to_first(&mut self) {
+    pub(crate) fn seek_to_start(&mut self) -> &mut Self {
+        trace!("seeking to start of skiplist");
         self.current_offset = self.skiplist.head_offset;
         self.current_height = MAX_HEIGHT;
+        self
     }
 
-    pub(crate) fn seek_to_last(&mut self) {
+    pub(crate) fn seek_to_first(&mut self) -> &mut Self {
+        self.current_offset = self.skiplist.head_offset;
+        trace!(
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to first element of skiplist"
+        );
+        self
+    }
+
+    pub(crate) fn seek_to_last(&mut self) -> &mut Self {
         self.current_offset = self.skiplist.tail_offset;
-        self.current_height = MAX_HEIGHT;
+        trace!(
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to last element of skiplist"
+        );
+        self
+    }
+
+    pub(crate) fn seek_to_key(&mut self, key: &[u8]) -> &mut Self {
+        trace!(
+            key = String::from_utf8_lossy(key).as_ref(),
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to key in skiplist"
+        );
+        loop {
+            let current = self.skiplist.arena.get::<Node>(self.current_offset);
+            let (next, next_offset) = current.next_node(self.skiplist, self.current_height);
+            if next_offset == self.skiplist.tail_offset {
+                if self.current_height > 1 {
+                    trace!("moving down a level while seeking");
+                    // move down one level
+                    self.current_height -= 1;
+                    continue;
+                } else {
+                    trace!("reached bottom level while seeking, stopping");
+                    break; // reached the bottom level, stop here
+                }
+            }
+            trace!(
+                next_offset,
+                next_key = String::from_utf8_lossy(next.key()).as_ref(),
+                next_seqnum = next.key_trailer.seqnum(),
+                "got next node in skiplist while seeking",
+            );
+            match key.cmp(next.key()) {
+                std::cmp::Ordering::Less => {
+                    if self.current_height > 1 {
+                        trace!("moving down a level while seeking");
+                        // move down one level
+                        self.current_height -= 1;
+                        continue;
+                    } else {
+                        trace!("reached bottom level while seeking, stopping");
+                        break; // reached the bottom level, stop here
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    trace!("moving to next node while seeking");
+                    // move to the next node
+                    self.current_offset = next_offset;
+                    continue;
+                }
+                std::cmp::Ordering::Equal => {
+                    trace!(
+                        next_offset,
+                        next_key = String::from_utf8_lossy(next.key()).as_ref(),
+                        next_seqnum = next.key_trailer.seqnum(),
+                        "found key while seeking, stopping"
+                    );
+                    // found the key, stop here
+                    break;
+                }
+            }
+        }
+
+        self
     }
 
     pub(crate) fn descend(&mut self) -> &mut Self {
@@ -634,14 +725,13 @@ impl<'a> Iterator for Iter<'a> {
             self.current_height, self.seqnum, "iterating skiplist",
         );
         loop {
+            if self.current_offset == self.skiplist.tail_offset {
+                trace!("reached tail of skiplist, stopping iteration");
+                return None;
+            }
             let current = self.skiplist.arena.get::<Node>(self.current_offset);
             let next_offset = current.next(self.current_height);
             let next = self.skiplist.arena.get::<Node>(next_offset);
-            if next_offset == self.skiplist.tail_offset {
-                trace!("reached end of skiplist");
-                // reached the end of the skiplist
-                return None;
-            }
             trace!(
                 next_offset,
                 next_key = String::from_utf8_lossy(next.key()).as_ref(),
@@ -753,5 +843,90 @@ mod tests {
         assert_eq!(results[2].0, b"key2".as_ref());
         assert_eq!(results[2].1.seqnum(), 2);
         assert_eq!(results[2].2, b"value2".as_ref());
+    }
+
+    #[test]
+    fn test_iter_seek() {
+        init!();
+
+        let arena = Arena::new(1024 * 16);
+        let skiplist = ArenaSkiplist::new_in(arena);
+
+        #[rustfmt::skip]
+        let entries = vec![
+            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Value), b"value1".as_ref()),
+            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Value), b"value2".as_ref()),
+            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Value), b"value3".as_ref()), // same key as key1 but higher seqnum
+            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Deletion), b"".as_ref()),     // deletion marker
+        ];
+
+        for (key, key_trailer, value) in &entries {
+            skiplist.insert_impl(key, *key_trailer, value, 1).unwrap();
+            skiplist.debug_all();
+        }
+
+        let vec: Vec<(_, _, _, _)> = skiplist
+            .iter(u64::MAX)
+            .descend_to_bottom()
+            .map(|(k, kt, v)| {
+                (
+                    kt.seqnum(),
+                    kt.kind(),
+                    String::from_utf8_lossy(k),
+                    String::from_utf8_lossy(v),
+                )
+            })
+            .collect();
+        println!("All entries in skiplist: {:?}", vec);
+
+        let mut iter = skiplist.iter(4);
+        iter.seek_to_start();
+        iter.descend_to_bottom();
+        assert!(iter.current_height == 1, "should be at bottom level");
+        let first = iter.next().unwrap();
+        assert_eq!(first.0, b"key1".as_ref());
+        assert_eq!(first.1.seqnum(), 3);
+        assert_eq!(first.2, b"value3".as_ref());
+
+        iter.seek_to_last();
+        assert!(iter.current_height == 1, "should be at bottom level");
+        assert!(
+            iter.current_offset != skiplist.head_offset,
+            "should not be at head"
+        );
+        assert!(iter.next().is_none(), "last should be tail");
+        assert!(
+            iter.current_offset == skiplist.tail_offset,
+            "should be at tail"
+        );
+
+        iter.seek_to_start();
+        iter.seek_to_key(b"key2".as_ref());
+        let next = iter.next().unwrap();
+        assert_eq!(next.0, b"key2".as_ref());
+        assert_eq!(next.1.seqnum(), 2);
+
+        iter.seek_to_start();
+        iter.seek_to_key(b"key3".as_ref());
+        let next = iter.next().unwrap();
+        assert_eq!(next.0, b"key3".as_ref());
+        assert_eq!(next.1.seqnum(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate key-seqnum-pair found in skiplist")]
+    fn test_insert_duplicate_key_seqnum() {
+        init!();
+
+        let arena = Arena::new(4096);
+        let skiplist = ArenaSkiplist::new_in(arena);
+
+        let key = b"key1";
+        let value = b"value1";
+        let key_trailer = KeyTrailer::new(1, KeyKind::Value);
+        skiplist.insert_impl(key, key_trailer, value, 2).unwrap();
+        skiplist.debug_all();
+        skiplist.insert_impl(key, key_trailer, value, 3).unwrap();
+        skiplist.debug_all();
     }
 }
