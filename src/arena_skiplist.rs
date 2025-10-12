@@ -59,6 +59,7 @@ impl From<u8> for KeyKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub(crate) struct KeyTrailer(u64);
 
@@ -396,8 +397,8 @@ impl ArenaSkiplist {
             node.set_next(self, height, next);
 
             // CAS loop to update the previous node's next link to point to the new node
-            match node.prev_atomic(height).compare_exchange_weak(
-                prev_offset,
+            match prev.next_atomic(height).compare_exchange_weak(
+                next_offset,
                 self.arena.ref_to_offset(node),
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
@@ -422,8 +423,8 @@ impl ArenaSkiplist {
                 }
             }
 
-            match node.next_atomic(height).compare_exchange(
-                next_offset,
+            match next.prev_atomic(height).compare_exchange(
+                prev_offset,
                 self.arena.ref_to_offset(node),
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
@@ -506,6 +507,7 @@ impl ArenaSkiplist {
 
         node.set_key(key);
         node.set_value(value);
+        node.key_trailer = key_trailer;
 
         trace!(
             node_offset,
@@ -542,6 +544,118 @@ impl ArenaSkiplist {
         }
 
         self.insert_impl(key, key_trailer, value, height)
+    }
+
+    /// Returns an iterator over the skiplist, starting from the head node.
+    /// The iterator will return nodes with a sequence number less than or equal to `seqnum`.
+    /// This allows for snapshot reads, commonly found in MVCC systems.
+    fn iter(&self, seqnum: u64) -> Iter<'_> {
+        Iter {
+            skiplist: self,
+            current_offset: self.head_offset,
+            current_height: MAX_HEIGHT,
+            seqnum,
+        }
+    }
+
+    fn debug(&self, height: u8) {
+        assert!(height > 0 && height <= MAX_HEIGHT, "invalid height");
+        let mut current_offset = self.head_offset;
+        let mut index = 0;
+        loop {
+            if current_offset == self.head_offset {
+                print!("{:>3}: [HEAD]", height);
+            }
+            let current = self.arena.get::<Node>(current_offset);
+            let next_offset = current.next(height);
+            let next = self.arena.get::<Node>(next_offset);
+            if next_offset == self.tail_offset {
+                print!(" -> [TAIL]");
+                break;
+            }
+            print!(
+                " -> [{:?}(#{}):{}]",
+                next.key_trailer.kind(),
+                next.key_trailer.seqnum(),
+                String::from_utf8_lossy(next.key()),
+            );
+            current_offset = next_offset;
+            index += 1;
+        }
+        println!();
+    }
+
+    fn debug_all(&self) {
+        for height in (1..=MAX_HEIGHT).rev() {
+            self.debug(height);
+        }
+    }
+}
+
+pub(crate) struct Iter<'a> {
+    skiplist: &'a ArenaSkiplist,
+    current_offset: u32,
+    current_height: u8,
+    /// The sequence number to filter by.
+    /// Only entries with a sequence number less than or equal to this will be returned.
+    seqnum: u64,
+}
+
+impl<'a> Iter<'a> {
+    pub(crate) fn seek_to_first(&mut self) {
+        self.current_offset = self.skiplist.head_offset;
+        self.current_height = MAX_HEIGHT;
+    }
+
+    pub(crate) fn seek_to_last(&mut self) {
+        self.current_offset = self.skiplist.tail_offset;
+        self.current_height = MAX_HEIGHT;
+    }
+
+    pub(crate) fn descend(&mut self) -> &mut Self {
+        if self.current_height > 1 {
+            self.current_height -= 1;
+        }
+        self
+    }
+
+    pub(crate) fn descend_to_bottom(&mut self) -> &mut Self {
+        self.current_height = 1;
+        self
+    }
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = (&'a [u8], KeyTrailer, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        trace!(
+            self.current_offset,
+            self.current_height, self.seqnum, "iterating skiplist",
+        );
+        loop {
+            let current = self.skiplist.arena.get::<Node>(self.current_offset);
+            let next_offset = current.next(self.current_height);
+            let next = self.skiplist.arena.get::<Node>(next_offset);
+            if next_offset == self.skiplist.tail_offset {
+                trace!("reached end of skiplist");
+                // reached the end of the skiplist
+                return None;
+            }
+            trace!(
+                next_offset,
+                next_key = String::from_utf8_lossy(next.key()).as_ref(),
+                next_seqnum = next.key_trailer.seqnum(),
+                "visiting next node in skiplist",
+            );
+            self.current_offset = next_offset;
+            if next.key_trailer.seqnum() <= self.seqnum {
+                return Some((next.key(), next.key_trailer, next.value()));
+            } else {
+                // skip entries with a higher seqnum
+                continue;
+            }
+        }
     }
 }
 
@@ -588,15 +702,56 @@ mod tests {
         let value = b"value1";
         let key_trailer = KeyTrailer::new(1, KeyKind::Value);
         skiplist.insert_impl(key, key_trailer, value, 2).unwrap();
+        skiplist.debug_all();
 
         let key2 = b"key2";
         let value2 = b"value2";
         let key_trailer2 = KeyTrailer::new(2, KeyKind::Value);
         skiplist.insert_impl(key2, key_trailer2, value2, 3).unwrap();
+        skiplist.debug_all();
 
         let key3 = b"key1"; // same key as key1 but higher seqnum
         let value3 = b"value3";
         let key_trailer3 = KeyTrailer::new(3, KeyKind::Value);
         skiplist.insert_impl(key3, key_trailer3, value3, 1).unwrap();
+        skiplist.debug_all();
+    }
+
+    #[test]
+    fn test_insert_and_iter() {
+        init!();
+
+        let arena = Arena::new(1024 * 16);
+        let skiplist = ArenaSkiplist::new_in(arena);
+
+        #[rustfmt::skip]
+        let entries = vec![
+            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Value), b"value1".as_ref()),
+            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Value), b"value2".as_ref()),
+            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Value), b"value3".as_ref()), // same key as key1 but higher seqnum
+            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Deletion), b"".as_ref()),     // deletion marker
+        ];
+
+        for (key, key_trailer, value) in &entries {
+            skiplist.insert_impl(key, *key_trailer, value, 1).unwrap();
+            skiplist.debug_all();
+        }
+
+        // Iterate with seqnum = 3, should see key1 (seqnum 3), key1 (seqnum 1), key2 (seqnum 2)
+
+        let mut iter = skiplist.iter(3);
+        iter.descend_to_bottom();
+        assert!(iter.current_height == 1, "should be at bottom level");
+        let results: Vec<(&[u8], KeyTrailer, &[u8])> = iter.collect();
+
+        assert_eq!(results[0].0, b"key1".as_ref());
+        assert_eq!(results[0].1.seqnum(), 3);
+        assert_eq!(results[0].2, b"value3".as_ref());
+        assert_eq!(results[1].0, b"key1".as_ref());
+        assert_eq!(results[1].1.seqnum(), 1);
+        assert_eq!(results[1].2, b"value1".as_ref());
+        assert_eq!(results[2].0, b"key2".as_ref());
+        assert_eq!(results[2].1.seqnum(), 2);
+        assert_eq!(results[2].2, b"value2".as_ref());
     }
 }
