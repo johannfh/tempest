@@ -13,7 +13,10 @@ fn main() {
         .with_max_level(tracing_level)
         .init();
 
-    let tempest = Tempest::new();
+    let span = span!(tracing::Level::INFO, "main");
+    let _enter = span.enter();
+
+    let tempest = Tempest::new("./data/".into());
     tempest.insert(b"key1", b"value1");
     info!("Inserted key1 with value1");
     tempest.insert(b"key2", b"value2");

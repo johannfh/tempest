@@ -487,6 +487,16 @@ impl ArenaSkiplist {
     ///
     /// For outside use, [`Self::insert()`] is available, which uses a probabilistic
     /// method to determine the height based on a fixed probability `P`.
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(key = String::from_utf8_lossy(key).as_ref(),
+            value = String::from_utf8_lossy(value).as_ref(),
+            height = height,
+            seqnum = key_trailer.seqnum(),
+            kind = ?key_trailer.kind(),
+        )
+    )]
     fn insert_impl(
         &self,
         key: &[u8],
@@ -559,8 +569,8 @@ impl ArenaSkiplist {
         self.insert_impl(key, key_trailer, value, height)
     }
 
-    pub(crate) fn get(&self, key: &[u8]) -> Option<(KeyTrailer, &[u8])> {
-        let mut iter = self.iter(u64::MAX);
+    pub(crate) fn get(&self, key: &[u8], seqnum: u64) -> Option<(KeyTrailer, &[u8])> {
+        let mut iter = self.iter(seqnum);
         // find key
         iter.seek_to_key(key).descend_to_bottom();
 
@@ -669,12 +679,17 @@ impl<'a> Iter<'a> {
             let (next, next_offset) = current.next_node(self.skiplist, self.current_height);
             if next_offset == self.skiplist.tail_offset {
                 if self.current_height > 1 {
-                    trace!("moving down a level while seeking");
+                    trace!(
+                        current_height = self.current_height,
+                        current_offset = self.current_offset,
+                        next_offset,
+                        "moving down while seeking, tail reached"
+                    );
                     // move down one level
                     self.current_height -= 1;
                     continue;
                 } else {
-                    trace!("reached bottom level while seeking, stopping");
+                    trace!("reached bottom while seeking, stopping");
                     break; // reached the bottom level, stop here
                 }
             }
