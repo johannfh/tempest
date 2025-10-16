@@ -1,5 +1,20 @@
 use std::path::PathBuf;
 
+use derive_more::{From, Into};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, From, Into)]
+pub struct WalNumber(u64);
+
+impl WalNumber {
+    pub const ZERO: u64 = 0;
+    pub const START: u64 = 1;
+    pub const MAX: u64 = (1 << 56) - 1;
+
+    pub fn inner(&self) -> u64 {
+        self.0
+    }
+}
+
 pub struct Wal {
     path: PathBuf,
 }
