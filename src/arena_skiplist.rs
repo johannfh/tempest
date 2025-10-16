@@ -471,7 +471,7 @@ impl ArenaSkiplist {
         let value_size = value.len() as u32;
 
         assert!(
-            key_trailer.kind() != KeyKind::Deletion || value_size == 0,
+            key_trailer.kind() != KeyKind::Delete || value_size == 0,
             "deletion marker must have empty value"
         );
 
@@ -785,19 +785,19 @@ mod tests {
 
         let key = b"key1";
         let value = b"value1";
-        let key_trailer = KeyTrailer::new(1, KeyKind::Value);
+        let key_trailer = KeyTrailer::new(1, KeyKind::Set);
         skiplist.insert_impl(key, key_trailer, value, 2).unwrap();
         skiplist.debug_all();
 
         let key2 = b"key2";
         let value2 = b"value2";
-        let key_trailer2 = KeyTrailer::new(2, KeyKind::Value);
+        let key_trailer2 = KeyTrailer::new(2, KeyKind::Set);
         skiplist.insert_impl(key2, key_trailer2, value2, 3).unwrap();
         skiplist.debug_all();
 
         let key3 = b"key1"; // same key as key1 but higher seqnum
         let value3 = b"value3";
-        let key_trailer3 = KeyTrailer::new(3, KeyKind::Value);
+        let key_trailer3 = KeyTrailer::new(3, KeyKind::Set);
         skiplist.insert_impl(key3, key_trailer3, value3, 1).unwrap();
         skiplist.debug_all();
     }
@@ -811,10 +811,10 @@ mod tests {
 
         #[rustfmt::skip]
         let entries = vec![
-            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Value), b"value1".as_ref()),
-            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Value), b"value2".as_ref()),
-            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Value), b"value3".as_ref()), // same key as key1 but higher seqnum
-            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Deletion), b"".as_ref()),     // deletion marker
+            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Set), b"value1".as_ref()),
+            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Set), b"value2".as_ref()),
+            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Set), b"value3".as_ref()), // same key as key1 but higher seqnum
+            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Delete), b"".as_ref()),     // deletion marker
         ];
 
         for (key, key_trailer, value) in &entries {
@@ -849,10 +849,10 @@ mod tests {
 
         #[rustfmt::skip]
         let entries = vec![
-            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Value), b"value1".as_ref()),
-            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Value), b"value2".as_ref()),
-            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Value), b"value3".as_ref()), // same key as key1 but higher seqnum
-            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Deletion), b"".as_ref()),     // deletion marker
+            (b"key1".as_ref(), KeyTrailer::new(1, KeyKind::Set), b"value1".as_ref()),
+            (b"key2".as_ref(), KeyTrailer::new(2, KeyKind::Set), b"value2".as_ref()),
+            (b"key1".as_ref(), KeyTrailer::new(3, KeyKind::Set), b"value3".as_ref()), // same key as key1 but higher seqnum
+            (b"key3".as_ref(), KeyTrailer::new(4, KeyKind::Delete), b"".as_ref()),     // deletion marker
         ];
 
         for (key, key_trailer, value) in &entries {
@@ -918,7 +918,7 @@ mod tests {
 
         let key = b"key1";
         let value = b"value1";
-        let key_trailer = KeyTrailer::new(1, KeyKind::Value);
+        let key_trailer = KeyTrailer::new(1, KeyKind::Set);
         skiplist.insert_impl(key, key_trailer, value, 2).unwrap();
         skiplist.debug_all();
         skiplist.insert_impl(key, key_trailer, value, 3).unwrap();

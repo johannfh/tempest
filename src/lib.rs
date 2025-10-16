@@ -182,7 +182,7 @@ impl Tempest {
     )]
     pub fn insert(&self, key: &[u8], value: &[u8]) {
         let seqnum = self.next_seqnum();
-        let key_trailer = KeyTrailer::new(seqnum, KeyKind::Value);
+        let key_trailer = KeyTrailer::new(seqnum, KeyKind::Set);
         self.skiplist
             .insert(key, key_trailer, value)
             .expect("insert should succeed");

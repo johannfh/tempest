@@ -30,10 +30,13 @@ impl From<u64> for SeqNum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub(crate) enum KeyKind {
-    /// A regular key-value entry.
-    Value = 0,
     /// A deletion marker for a key.
-    Deletion = 1,
+    Delete = 0,
+    /// A regular key-value entry.
+    Set = 1,
+    /// A merge operation for a key.
+    /// The semantics of merge operations are application-defined.
+    Merge = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
