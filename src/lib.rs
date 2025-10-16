@@ -84,9 +84,10 @@ impl bincode::Decode<()> for Manifest {
     }
 }
 
-/// # Tempest
+/// # Tempest DB
+///
 /// A simple persistent key-value store using an LSM-tree architecture.
-pub struct Tempest {
+pub struct DB {
     /// The data directory for all the data files.
     data_dir: PathBuf,
 
@@ -102,7 +103,7 @@ pub struct Tempest {
     wal_manager: WalManager,
 }
 
-impl Tempest {
+impl DB {
     pub fn new(dir: PathBuf) -> Self {
         let arena = Arena::new(1024 * 1024); // 1MiB arena
         #[cfg(test)]
@@ -245,7 +246,7 @@ mod tests {
     fn test_create_tempest() {
         init!();
 
-        let tempest = Tempest::new("./data".into());
+        let tempest = DB::new("./data".into());
         tempest.insert(b"key1", b"value1");
         tempest.insert(b"key2", b"value2");
         tempest.insert(b"key1", b"value3"); // Update key1

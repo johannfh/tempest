@@ -1,4 +1,4 @@
-use tempest::Tempest;
+use tempest::DB;
 
 #[macro_use]
 extern crate tracing;
@@ -16,7 +16,7 @@ fn main() {
     let span = span!(tracing::Level::INFO, "main");
     let _enter = span.enter();
 
-    let tempest = Tempest::new("./data/".into());
+    let tempest = DB::new("./data/".into());
     tempest.insert(b"key1", b"value1");
     info!("Inserted key1 with value1");
     tempest.insert(b"key2", b"value2");
