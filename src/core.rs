@@ -1,0 +1,91 @@
+use bincode::{de::read::Reader, enc::write::Writer};
+use derive_more::Display;
+use num_enum::TryFromPrimitive;
+
+pub type Key<'a> = &'a [u8];
+pub type Value<'a> = &'a [u8];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Display)]
+#[display("#{}", _0)]
+pub struct SeqNum(u64);
+
+impl SeqNum {
+    pub const ZERO: u64 = 0;
+    pub const START: u64 = 16; // reserve 0-15 for special purposes?
+    pub const MAX: u64 = (1 << 56) - 1;
+
+    pub(crate) fn inner(&self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for SeqNum {
+    fn from(value: u64) -> Self {
+        assert!(value <= Self::MAX, "sequence number overflow: {}", value);
+        Self(value)
+    }
+}
+
+/// Type of the key-value entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
+pub(crate) enum KeyKind {
+    /// A regular key-value entry.
+    Value = 0,
+    /// A deletion marker for a key.
+    Deletion = 1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct KeyTrailer(u64);
+
+impl KeyTrailer {
+    pub(crate) fn new(seqnum: impl Into<SeqNum>, kind: KeyKind) -> Self {
+        let seqnum: SeqNum = seqnum.into();
+        Self(seqnum.inner() << 8 | (kind as u64))
+    }
+
+    pub(crate) fn seqnum(&self) -> SeqNum {
+        SeqNum(self.0 >> 8)
+    }
+
+    pub(crate) fn kind(&self) -> KeyKind {
+        KeyKind::try_from((self.0 & 0xff) as u8).expect("invalid key kind")
+    }
+}
+
+impl bincode::Encode for KeyTrailer {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        encoder.writer().write(&self.0.to_le_bytes())?;
+        Ok(())
+    }
+}
+
+impl bincode::Decode<()> for KeyTrailer {
+    fn decode<D: bincode::de::Decoder>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let value = {
+            let mut buf = [0u8; 8];
+            decoder.reader().read(&mut buf)?;
+            u64::from_le_bytes(buf)
+        };
+        Self::try_from(value).map_err(|err| bincode::error::DecodeError::Other(err))
+    }
+}
+
+impl TryFrom<u64> for KeyTrailer {
+    type Error = &'static str;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let kind = (value & 0xff) as u8;
+        match KeyKind::try_from(kind) {
+            Err(_) => Err("invalid key kind"),
+            Ok(_) => Ok(Self(value)),
+        }
+    }
+}

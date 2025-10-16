@@ -9,12 +9,14 @@ use bincode::{de::read::Reader, enc::write::Writer};
 
 use crate::{
     arena::Arena,
-    arena_skiplist::{ArenaSkiplist, KeyKind, KeyTrailer},
+    arena_skiplist::ArenaSkiplist,
+    core::{KeyKind, KeyTrailer, SeqNum},
     wal::WalManager,
 };
 
 mod arena;
 mod arena_skiplist;
+mod core;
 mod wal;
 
 #[macro_use]
@@ -154,21 +156,22 @@ impl Tempest {
 
         Self {
             skiplist: ArenaSkiplist::new_in(arena),
-            seqnum: AtomicU64::new(1),
+            seqnum: AtomicU64::new(SeqNum::START),
             data_dir: dir.clone(),
             wal_manager: WalManager::new(dir),
         }
     }
 
     /// Get the current sequence number.
-    fn latest_seqnum(&self) -> u64 {
-        self.seqnum.load(std::sync::atomic::Ordering::SeqCst) - 1
+    fn latest_seqnum(&self) -> SeqNum {
+        (self.seqnum.load(std::sync::atomic::Ordering::SeqCst) - 1).into()
     }
 
     /// Get the next sequence number and increment the internal counter.
-    fn next_seqnum(&self) -> u64 {
+    fn next_seqnum(&self) -> SeqNum {
         self.seqnum
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .into()
     }
 
     #[instrument(
@@ -199,8 +202,8 @@ impl Tempest {
         match self.skiplist.get(key, latest_seqnum) {
             Some((key_trailer, value)) => {
                 trace!(
-                    latest_seqnum,
-                    seqnum = key_trailer.seqnum(),
+                    latest_seqnum = latest_seqnum.inner(),
+                    seqnum = key_trailer.seqnum().inner(),
                     value,
                     "found key",
                 );
