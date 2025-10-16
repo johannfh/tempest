@@ -33,11 +33,10 @@ impl Arena {
     /// # Panics
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
-    #[instrument(
-        name = "arena_alloc",
-        skip_all,
-        fields(size = n, align = align)
-    )]
+    #[instrument(name = "arena_alloc", level = "trace", skip_all, fields(
+        size = n,
+        align,
+    ))]
     pub(crate) fn alloc(&self, n: u32, align: u32) -> Option<u32> {
         assert!(n > 0, "n must be greater than 0");
         assert!(

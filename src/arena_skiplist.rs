@@ -272,11 +272,19 @@ impl ArenaSkiplist {
     /// # Panics
     /// - if the target height is invalid (not in `1..=MAX_HEIGHT`).
     /// - if a duplicate key-seqnum pair is found in the skiplist.
+    #[instrument(level = "trace", skip_all, fields(
+        key_len = node.key().len(),
+        key_hex = hex::encode(node.key()),
+        seqnum = node.key_trailer.seqnum().inner(),
+        target_height = target_height,
+    ))]
     fn find_insert_position(&self, node: &Node, target_height: u8) -> (&Node, u32, &Node, u32) {
         assert!(
             target_height > 0 && target_height <= MAX_HEIGHT,
             "invalid height"
         );
+
+        trace!("finding insert position in skiplist");
 
         // traverse the skiplist from top to bottom
         let mut current_height = MAX_HEIGHT;
@@ -292,8 +300,14 @@ impl ArenaSkiplist {
             if next_offset == self.tail_offset {
                 if current_height == target_height {
                     // found the position at height to insert the node at
+                    trace!(
+                        current_height,
+                        prev_offset, next_offset, "found insert position"
+                    );
                     return (prev, prev_offset, next, next_offset);
                 } else {
+                    // move down one level
+                    trace!(current_height, prev_offset, next_offset, "moving down");
                     current_height -= 1;
                     continue;
                 }
@@ -314,6 +328,10 @@ impl ArenaSkiplist {
                 std::cmp::Ordering::Less => {
                     if current_height == target_height {
                         // found the position at height to insert the node at
+                        trace!(
+                            current_height,
+                            prev_offset, next_offset, "found insert position"
+                        );
                         return (prev, prev_offset, next, next_offset);
                     } else {
                         // move down one level
@@ -333,17 +351,22 @@ impl ArenaSkiplist {
                     // key-seqnum pairs. If such a pair is found, the function will panic.
                     // This is a simplification for this implementation and should be handled properly
                     // in a production system (e.g., by returning an error).
-                    panic!(
-                        "duplicate key-seqnum-pair found in skiplist, key: {:?}, seqnum: {}, height: {}",
-                        String::from_utf8_lossy(node.key()),
-                        node.key_trailer.seqnum(),
-                        target_height
+                    error!(
+                        prev_offset,
+                        next_offset, "duplicate key-seqnum-pair found in skiplist",
                     );
+                    panic!("duplicate key-seqnum-pair found in skiplist",);
                 }
             }
         }
     }
 
+    #[instrument(level = "trace", skip_all, fields(
+        key_len = node.key().len(),
+        key_hex = hex::encode(node.key()),
+        seqnum = node.key_trailer.seqnum().inner(),
+        height = height,
+    ))]
     fn link_node_at_height(&self, node: &Node, height: u8) {
         assert!(height > 0 && height <= MAX_HEIGHT, "invalid height");
         let node_offset = self.arena.ref_to_offset(node);
@@ -362,16 +385,15 @@ impl ArenaSkiplist {
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
             ) {
-                // successfully updated the previous node's next link
-                Ok(_) => {}
+                Ok(_) => {
+                    // successfully updated the previous node's next link
+                    trace!(node_offset, prev_offset, "linked node prev -> this");
+                }
                 Err(atomic_value) => {
                     // failed to update, retry finding the position
                     trace!(
-                        height,
                         node_offset,
-                        prev_offset,
-                        atomic_value,
-                        "failed to link nodes prev -> this, retrying"
+                        prev_offset, atomic_value, "failed to link node prev -> this, retrying"
                     );
                     continue;
                 }
@@ -383,17 +405,16 @@ impl ArenaSkiplist {
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
             ) {
-                // successfully updated the next node's previous link
-                Ok(_) => {}
+                Ok(_) => {
+                    // successfully updated the next node's previous link
+                    trace!(node_offset, next_offset, "linked node this <- next");
+                }
                 Err(atomic_value) => {
                     // failed to update, this is fine, since it means another thread already
                     // inserted a node between this and next and updated next's prev link
                     trace!(
-                        height = height,
                         node_offset,
-                        next_offset,
-                        atomic_value,
-                        "failed to link nodes this <- next, proceeding"
+                        next_offset, atomic_value, "failed to link node this <- next, proceeding"
                     );
                 }
             }
@@ -403,6 +424,12 @@ impl ArenaSkiplist {
         }
     }
 
+    #[instrument(level = "trace", skip_all, fields(
+        key_len = node.key().len(),
+        key_hex = hex::encode(node.key()),
+        seqnum = node.key_trailer.seqnum().inner(),
+        height = height,
+    ))]
     fn link_node(&self, node: &Node, height: u8) {
         for h in 1..=height {
             self.link_node_at_height(node, h);
@@ -429,16 +456,39 @@ impl ArenaSkiplist {
             "deletion marker must have empty value"
         );
 
+        trace!(
+            seqnum = key_trailer.seqnum().inner(),
+            kind = ?key_trailer.kind(),
+            key = String::from_utf8_lossy(key).as_ref(),
+            value = String::from_utf8_lossy(value).as_ref(),
+            height,
+            "inserting key-value pair into skiplist",
+        );
+
         // allocate a new node in the arena
-        let (node, _node_offset) = self.allocate_node(height, key_size, value_size)?;
+        let (node, node_offset) = self.allocate_node(height, key_size, value_size)?;
 
         // copy key and value into the node's data section
         let key_offset = node.data_offset;
-        let _value_offset = key_offset + key.len() as u32;
+        let value_offset = key_offset + key.len() as u32;
 
         node.set_key(key);
         node.set_value(value);
         node.key_trailer = key_trailer;
+
+        trace!(
+            node_offset,
+            seqnum = key_trailer.seqnum().inner(),
+            kind = ?key_trailer.kind(),
+            key_offset,
+            key = String::from_utf8_lossy(key).as_ref(),
+            key_raw = key,
+            value_offset,
+            value = String::from_utf8_lossy(value).as_ref(),
+            value_raw = value,
+            height,
+            "initialized node for linkage",
+        );
 
         assert_eq!(node.key(), key, "key should be copied correctly");
         assert_eq!(node.value(), value, "value should be copied correctly");
@@ -448,16 +498,15 @@ impl ArenaSkiplist {
         Ok(())
     }
 
-    #[instrument(
-        name = "skiplist_insert",
-        level = "trace",
-        skip_all,
-        fields(key = String::from_utf8_lossy(key).as_ref(),
-            value = String::from_utf8_lossy(value).as_ref(),
-            seqnum = key_trailer.seqnum().inner(),
-            kind = ?key_trailer.kind(),
-        )
-    )]
+    #[instrument(name = "skiplist_insert", level = "debug", skip_all, fields(
+        key_len = key.len(),
+        key_hex = hex::encode(key),
+        value_len = value.len(),
+        value_hex = hex::encode(value),
+        seqnum = key_trailer.seqnum().inner(),
+        kind = ?key_trailer.kind(),
+        height,
+    ))]
     pub(crate) fn insert(
         &self,
         key: Key,
@@ -469,13 +518,23 @@ impl ArenaSkiplist {
         while height < MAX_HEIGHT && rand::random::<f64>() < P {
             height += 1;
         }
-
         tracing::Span::current().record("height", height);
 
         self.insert_impl(key, key_trailer, value, height)
     }
 
-    pub(crate) fn get(&self, key: Key, max_seqnum: SeqNum) -> Option<(KeyTrailer, Value<'_>)> {
+    #[instrument(name = "skiplist_get", level = "debug", skip_all, fields(
+        key_len = key.len(),
+        key_hex = hex::encode(key),
+        max_seqnum,
+    ))]
+    pub(crate) fn get(
+        &self,
+        key: Key,
+        max_seqnum: impl Into<SeqNum>,
+    ) -> Option<(KeyTrailer, Value<'_>)> {
+        let max_seqnum: SeqNum = max_seqnum.into();
+        tracing::Span::current().record("max_seqnum", max_seqnum.inner());
         let mut iter = self.iter(max_seqnum);
         // find key
         iter.seek_to_key(key).descend_to_bottom();
@@ -496,11 +555,12 @@ impl ArenaSkiplist {
     /// The iterator will return nodes with a sequence number less than or equal to `seqnum`.
     /// This allows for snapshot reads, commonly found in MVCC systems.
     fn iter(&self, max_seqnum: impl Into<SeqNum>) -> Iter<'_> {
+        let max_seqnum = max_seqnum.into();
         Iter {
             skiplist: self,
             current_offset: self.head_offset,
             current_height: MAX_HEIGHT,
-            seqnum: max_seqnum.into(),
+            max_seqnum,
         }
     }
 
@@ -542,11 +602,12 @@ pub(crate) struct Iter<'a> {
     current_height: u8,
     /// The sequence number to filter by.
     /// Only entries with a sequence number less than or equal to this will be returned.
-    seqnum: SeqNum,
+    max_seqnum: SeqNum,
 }
 
 impl<'a> Iter<'a> {
     pub(crate) fn seek_to_start(&mut self) -> &mut Self {
+        trace!("seeking to start of skiplist");
         self.current_offset = self.skiplist.head_offset;
         self.current_height = MAX_HEIGHT;
         self
@@ -554,43 +615,81 @@ impl<'a> Iter<'a> {
 
     pub(crate) fn seek_to_first(&mut self) -> &mut Self {
         self.current_offset = self.skiplist.head_offset;
+        trace!(
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to first element of skiplist"
+        );
         self
     }
 
     pub(crate) fn seek_to_last(&mut self) -> &mut Self {
         self.current_offset = self.skiplist.tail_offset;
+        trace!(
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to last element of skiplist"
+        );
         self
     }
 
     pub(crate) fn seek_to_key(&mut self, key: Key) -> &mut Self {
+        trace!(
+            key = String::from_utf8_lossy(key).as_ref(),
+            height = self.current_height,
+            offset = self.current_offset,
+            "seeking to key in skiplist"
+        );
         loop {
             let current = self.skiplist.arena.get::<Node>(self.current_offset);
             let (next, next_offset) = current.next_node(self.skiplist, self.current_height);
             if next_offset == self.skiplist.tail_offset {
                 if self.current_height > 1 {
+                    trace!(
+                        current_height = self.current_height,
+                        current_offset = self.current_offset,
+                        next_offset,
+                        "moving down while seeking, tail reached"
+                    );
                     // move down one level
                     self.current_height -= 1;
                     continue;
                 } else {
+                    trace!("reached bottom while seeking, stopping");
                     break; // reached the bottom level, stop here
                 }
             }
+            trace!(
+                next_offset,
+                next_key = String::from_utf8_lossy(next.key()).as_ref(),
+                next_seqnum = next.key_trailer.seqnum().inner(),
+                "got next node in skiplist while seeking",
+            );
             match key.cmp(next.key()) {
                 std::cmp::Ordering::Less => {
                     if self.current_height > 1 {
+                        trace!("moving down a level while seeking");
                         // move down one level
                         self.current_height -= 1;
                         continue;
                     } else {
+                        trace!("reached bottom level while seeking, stopping");
                         break; // reached the bottom level, stop here
                     }
                 }
                 std::cmp::Ordering::Greater => {
+                    trace!("moving to next node while seeking");
                     // move to the next node
                     self.current_offset = next_offset;
                     continue;
                 }
                 std::cmp::Ordering::Equal => {
+                    trace!(
+                        next_offset,
+                        next_key = String::from_utf8_lossy(next.key()).as_ref(),
+                        next_seqnum = next.key_trailer.seqnum().inner(),
+                        "found key while seeking, stopping"
+                    );
                     // found the key, stop here
                     break;
                 }
@@ -620,7 +719,7 @@ impl<'a> Iterator for Iter<'a> {
         trace!(
             current_offset = self.current_offset,
             current_height = self.current_height,
-            seqnum = self.seqnum.inner(),
+            seqnum = self.max_seqnum.inner(),
             "iterating skiplist",
         );
         loop {
@@ -638,7 +737,7 @@ impl<'a> Iterator for Iter<'a> {
                 "visiting next node in skiplist",
             );
             self.current_offset = next_offset;
-            if next.key_trailer.seqnum() <= self.seqnum {
+            if next.key_trailer.seqnum() <= self.max_seqnum {
                 return Some((next.key(), next.key_trailer, next.value()));
             } else {
                 // skip entries with a higher seqnum
@@ -731,7 +830,7 @@ mod tests {
         let mut iter = skiplist.iter(3);
         iter.descend_to_bottom();
         assert!(iter.current_height == 1, "should be at bottom level");
-        let results: Vec<(&[u8], KeyTrailer, &[u8])> = iter.collect();
+        let results: Vec<(Key, KeyTrailer, Value)> = iter.collect();
 
         assert_eq!(results[0].0, b"key1".as_ref());
         assert_eq!(results[0].1.seqnum(), 3.into());

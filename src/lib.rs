@@ -10,7 +10,7 @@ use bincode::{de::read::Reader, enc::write::Writer};
 use crate::{
     arena::Arena,
     arena_skiplist::ArenaSkiplist,
-    core::{KeyKind, KeyTrailer, SeqNum},
+    core::{Key, KeyKind, KeyTrailer, SeqNum, Value},
     wal::WalManager,
 };
 
@@ -175,13 +175,13 @@ impl DB {
             .into()
     }
 
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(key = String::from_utf8_lossy(key).as_ref(),
-            value = String::from_utf8_lossy(value).as_ref())
-    )]
-    pub fn insert(&self, key: &[u8], value: &[u8]) {
+    #[instrument(level = "debug", skip_all, fields(
+        key_len = key.len(),
+        key_hex = hex::encode(key),
+        value_len = value.len(),
+        value_hex = hex::encode(value),
+    ))]
+    pub fn insert(&self, key: Key, value: Value) {
         let seqnum = self.next_seqnum();
         let key_trailer = KeyTrailer::new(seqnum, KeyKind::Set);
         self.skiplist
@@ -193,21 +193,17 @@ impl DB {
         );
     }
 
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(key = String::from_utf8_lossy(key).as_ref()),
-    )]
-    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        let latest_seqnum = self.latest_seqnum();
-        match self.skiplist.get(key, latest_seqnum) {
+    #[instrument(level = "debug", skip_all, fields(
+        key_len = key.len(),
+        key_hex = hex::encode(key),
+        value_len, value_hex, seqnum,
+    ))]
+    pub fn get(&self, key: Key) -> Option<Value<'_>> {
+        match self.skiplist.get(key, SeqNum::MAX) {
             Some((key_trailer, value)) => {
-                trace!(
-                    latest_seqnum = latest_seqnum.inner(),
-                    seqnum = key_trailer.seqnum().inner(),
-                    value,
-                    "found key",
-                );
+                tracing::Span::current().record("value_len", value.len());
+                tracing::Span::current().record("value_hex", hex::encode(value));
+                tracing::Span::current().record("seqnum", key_trailer.seqnum().inner());
                 Some(value)
             }
             None => {

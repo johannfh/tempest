@@ -11,7 +11,6 @@ use opentelemetry_semantic_conventions::{
 
 #[macro_use]
 extern crate tracing;
-use tracing_core::Level;
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -82,6 +81,11 @@ fn init_tracing_subscriber() -> OtelGuard {
 
     let tracer = tracer_provider.tracer("tempest-otel-example");
 
+    let tracing_level = std::env::var("TRACE_LEVEL")
+        .unwrap_or_else(|_| "warn".to_string())
+        .parse::<tracing::Level>()
+        .expect("Invalid TRACE_LEVEL");
+
     tracing_subscriber::registry()
         // The global level filter prevents the exporter network stack
         // from reentering the globally installed OpenTelemetryLayer with
@@ -91,7 +95,7 @@ fn init_tracing_subscriber() -> OtelGuard {
         // per-layer filtering to target the telemetry layer specifically,
         // e.g. by target matching.
         .with(tracing_subscriber::filter::LevelFilter::from_level(
-            Level::TRACE,
+            tracing_level,
         ))
         .with(tracing_subscriber::fmt::layer())
         .with(MetricsLayer::new(meter_provider.clone()))
@@ -132,4 +136,16 @@ async fn main() {
     info!("Inserted key2 with value2");
     db.insert(b"key1", b"value3"); // Update key1
     info!("Updated key1 with value3");
+
+    let val1 = db.get(b"key1").expect("key1 should exist");
+    info!(
+        "Retrieved key1 with value: {:?}",
+        hex::encode(val1)
+    );
+
+    let val2 = db.get(b"key2").expect("key2 should exist");
+    info!(
+        "Retrieved key2 with value: {:?}",
+        hex::encode(val2)
+    );
 }
