@@ -1,8 +1,12 @@
+use std::time::Duration;
+
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_sdk::{
     Resource,
     metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
-    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
+    trace::{
+        BatchConfigBuilder, BatchSpanProcessor, RandomIdGenerator, Sampler, SdkTracerProvider,
+    },
 };
 use opentelemetry_semantic_conventions::{
     SCHEMA_URL,
@@ -37,7 +41,7 @@ fn init_meter_provider() -> SdkMeterProvider {
         .unwrap();
 
     let reader = PeriodicReader::builder(exporter)
-        .with_interval(std::time::Duration::from_secs(30))
+        .with_interval(Duration::from_secs(30))
         .build();
 
     // For debugging in development
@@ -70,7 +74,17 @@ fn init_tracer_provider() -> SdkTracerProvider {
         // If export trace to AWS X-Ray, you can use XrayIdGenerator
         .with_id_generator(RandomIdGenerator::default())
         .with_resource(resource())
-        .with_batch_exporter(exporter)
+        .with_span_processor(
+            BatchSpanProcessor::builder(exporter)
+                .with_batch_config(
+                    BatchConfigBuilder::default()
+                        .with_max_queue_size(16384)
+                        .with_max_export_batch_size(8192)
+                        .with_scheduled_delay(Duration::from_millis(5000))
+                        .build(),
+                )
+                .build(),
+        )
         .build()
 }
 
@@ -138,14 +152,8 @@ async fn main() {
     info!("Updated key1 with value3");
 
     let val1 = db.get(b"key1").expect("key1 should exist");
-    info!(
-        "Retrieved key1 with value: {:?}",
-        hex::encode(val1)
-    );
+    info!("Retrieved key1 with value: {:?}", hex::encode(val1));
 
     let val2 = db.get(b"key2").expect("key2 should exist");
-    info!(
-        "Retrieved key2 with value: {:?}",
-        hex::encode(val2)
-    );
+    info!("Retrieved key2 with value: {:?}", hex::encode(val2));
 }
