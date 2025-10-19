@@ -3,6 +3,22 @@ name = "tempest"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Tracing levels
+tracing-off = ["tracing/max_level_off"]
+tracing-error = ["tracing/max_level_error"]
+tracing-warn = ["tracing/max_level_warn"]
+tracing-info = ["tracing/max_level_info"]
+tracing-debug = ["tracing/max_level_debug"]
+tracing-trace = ["tracing/max_level_trace"]
+release-tracing-off = ["tracing/release_max_level_off"]
+release-tracing-error = ["tracing/release_max_level_error"]
+release-tracing-warn = ["tracing/release_max_level_warn"]
+release-tracing-info = ["tracing/release_max_level_info"]
+release-tracing-debug = ["tracing/release_max_level_debug"]
+release-tracing-trace = ["tracing/release_max_level_trace"]
+
 [dependencies]
 bincode = "2.0.1"
 derive_more = { version = "2.0.1", features = ["full"] }
@@ -11,7 +27,7 @@ hex = "0.4.3"
 log = "0.4.28"
 num_enum = "0.7.4"
 rand = "0.9.2"
-tracing = { version = "0.1.41" }
+tracing = { version = "0.1.41", features = [] }
 tracing-subscriber = "0.3.20"
 
 [dev-dependencies]

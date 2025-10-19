@@ -104,10 +104,10 @@ pub struct DB {
 }
 
 impl DB {
-    pub fn new(dir: PathBuf) -> Self {
+    #[instrument(level = "info", skip_all, fields(dir = ?dir))]
+    pub fn open(dir: PathBuf) -> Self {
         let arena = Arena::new(1024 * 1024); // 1MiB arena
-        #[cfg(test)]
-        let dir = {
+        if cfg!(test) {
             use std::time;
             _ = dir;
 
@@ -133,11 +133,7 @@ impl DB {
 
             std::fs::create_dir_all(&temp_dir).expect("Failed to create temp data directory");
             trace!("Using temp data dir: {:?}", temp_dir);
-            temp_dir
-        };
-
-        #[cfg(not(test))]
-        {
+        } else {
             // In non-test environments, create the directory if it doesn't exist.
             if !dir.exists() {
                 std::fs::create_dir_all(&dir).expect("Failed to create data directory");
@@ -201,9 +197,12 @@ impl DB {
     pub fn get(&self, key: Key) -> Option<Value<'_>> {
         match self.skiplist.get(key, SeqNum::MAX) {
             Some((key_trailer, value)) => {
-                tracing::Span::current().record("value_len", value.len());
-                tracing::Span::current().record("value_hex", hex::encode(value));
-                tracing::Span::current().record("seqnum", key_trailer.seqnum().inner());
+                if tracing::level_filters::STATIC_MAX_LEVEL <= tracing::metadata::LevelFilter::DEBUG
+                {
+                    tracing::Span::current().record("value_len", value.len());
+                    tracing::Span::current().record("value_hex", hex::encode(value));
+                    tracing::Span::current().record("seqnum", key_trailer.seqnum().inner());
+                }
                 Some(value)
             }
             None => {
@@ -242,7 +241,7 @@ mod tests {
     fn test_create_tempest() {
         init!();
 
-        let tempest = DB::new("./data".into());
+        let tempest = DB::open("./data".into());
         tempest.insert(b"key1", b"value1");
         tempest.insert(b"key2", b"value2");
         tempest.insert(b"key1", b"value3"); // Update key1

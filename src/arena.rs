@@ -33,7 +33,7 @@ impl Arena {
     /// # Panics
     /// - if `n` is zero.
     /// - if `align` is not a power of two.
-    #[instrument(name = "arena_alloc", level = "trace", skip_all, fields(
+    #[instrument(level = "trace", name = "arena_alloc", skip_all, fields(
         size = n,
         align,
     ))]
@@ -65,7 +65,6 @@ impl Arena {
                 .is_ok()
             {
                 let remaining_capacity = capacity - new_pos;
-
                 trace!(
                     size = n,
                     align,

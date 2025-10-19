@@ -96,7 +96,7 @@ fn init_tracing_subscriber() -> OtelGuard {
     let tracer = tracer_provider.tracer("tempest-otel-example");
 
     let tracing_level = std::env::var("TRACE_LEVEL")
-        .unwrap_or_else(|_| "warn".to_string())
+        .unwrap_or_else(|_| "info".to_string())
         .parse::<tracing::Level>()
         .expect("Invalid TRACE_LEVEL");
 
@@ -142,7 +142,16 @@ impl Drop for OtelGuard {
 async fn main() {
     let _guard = init_tracing_subscriber();
 
-    let db = tempest::DB::new("./data/".into());
+    // log highest compiled trace level
+    println!(
+        "Tracing initialized with level: {:?} (max: {:?})",
+        // runtime
+        tracing::level_filters::LevelFilter::current(),
+        // comptime
+        tracing::level_filters::STATIC_MAX_LEVEL,
+    );
+
+    let db = tempest::DB::open("./data/".into());
 
     db.insert(b"key1", b"value1");
     info!("Inserted key1 with value1");

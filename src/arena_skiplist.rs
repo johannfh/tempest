@@ -234,6 +234,7 @@ impl ArenaSkiplist {
         arena
     }
 
+    #[instrument(level = "trace", skip_all, fields(height, key_size, value_size,))]
     fn allocate_node(
         &self,
         height: u8,
@@ -470,7 +471,7 @@ impl ArenaSkiplist {
 
         // copy key and value into the node's data section
         let key_offset = node.data_offset;
-        let value_offset = key_offset + key.len() as u32;
+        let _value_offset = key_offset + key.len() as u32;
 
         node.set_key(key);
         node.set_value(value);
@@ -483,7 +484,7 @@ impl ArenaSkiplist {
             key_offset,
             key = String::from_utf8_lossy(key).as_ref(),
             key_raw = key,
-            value_offset,
+            value_offset = _value_offset,
             value = String::from_utf8_lossy(value).as_ref(),
             value_raw = value,
             height,
@@ -498,7 +499,7 @@ impl ArenaSkiplist {
         Ok(())
     }
 
-    #[instrument(name = "skiplist_insert", level = "debug", skip_all, fields(
+    #[instrument(level = "debug", name = "skiplist_insert", skip_all, fields(
         key_len = key.len(),
         key_hex = hex::encode(key),
         value_len = value.len(),
@@ -518,12 +519,15 @@ impl ArenaSkiplist {
         while height < MAX_HEIGHT && rand::random::<f64>() < P {
             height += 1;
         }
-        tracing::Span::current().record("height", height);
+
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            tracing::Span::current().record("height", height);
+        }
 
         self.insert_impl(key, key_trailer, value, height)
     }
 
-    #[instrument(name = "skiplist_get", level = "debug", skip_all, fields(
+    #[instrument(level = "debug", name = "skiplist_get", skip_all, fields(
         key_len = key.len(),
         key_hex = hex::encode(key),
         max_seqnum,
@@ -564,6 +568,7 @@ impl ArenaSkiplist {
         }
     }
 
+    #[instrument(level = "debug", skip_all, fields(height))]
     fn debug(&self, height: u8) {
         assert!(height > 0 && height <= MAX_HEIGHT, "invalid height");
         let mut current_offset = self.head_offset;
