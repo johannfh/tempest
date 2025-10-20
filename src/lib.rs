@@ -91,7 +91,7 @@ impl bincode::Decode<()> for Manifest {
 /// # Tempest DB
 ///
 /// A simple persistent key-value store using an LSM-tree architecture.
-pub struct DB {
+pub struct KvStore {
     /// The data directory for all the data files.
     data_dir: PathBuf,
 
@@ -113,7 +113,7 @@ pub enum TempestError {
     IoError(std::io::Error),
 }
 
-impl DB {
+impl KvStore {
     #[instrument(level = "info", skip_all)]
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, TempestError> {
         let dir: PathBuf = dir.as_ref().to_path_buf();
