@@ -7,7 +7,7 @@ extern crate tempest;
 fn test_kv_open() {
     init!();
 
-    let kv_dir = common::get_test_dir("test_kv_open");
+    let kv_dir = common::get_test_dir().expect("failed to get test dir");
 
     let kv = KvStore::open(kv_dir).expect("failed to open db");
     kv.insert(b"key1", b"value1");

@@ -209,8 +209,7 @@ impl KvStore {
     pub fn get(&self, key: Key) -> Option<Value<'_>> {
         match self.skiplist.get(key, SeqNum::MAX) {
             Some((key_trailer, value)) => {
-                if tracing::level_filters::STATIC_MAX_LEVEL <= tracing::metadata::LevelFilter::DEBUG
-                {
+                if tracing::enabled!(tracing::Level::DEBUG) {
                     tracing::Span::current().record("value_len", value.len());
                     tracing::Span::current().record("value_hex", hex::encode(value));
                     tracing::Span::current().record("seqnum", key_trailer.seqnum().inner());
@@ -218,7 +217,11 @@ impl KvStore {
                 Some(value)
             }
             None => {
-                trace!(key, "key not found");
+                trace!(
+                    key_len = key.len(),
+                    key_hex = hex::encode(key),
+                    "key not found"
+                );
                 None
             }
         }

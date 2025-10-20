@@ -14,13 +14,24 @@ macro_rules! init {
 
 /// Generates a unique test directory path based on the current timestamp
 /// and the provided name. This helps to avoid conflicts between test runs.
-pub fn get_test_dir(name: &str) -> PathBuf {
+#[cfg(test)]
+pub fn get_test_dir() -> std::io::Result<PathBuf> {
+    let thread = std::thread::current();
+    let name = thread.name().expect("Test thread should have a name");
+
     let now = std::time::SystemTime::now();
     let timestamp = now
         .duration_since(std::time::UNIX_EPOCH)
         .expect("Time went backwards");
 
-    let millis = timestamp.as_millis();
-    let subsec_nanos = timestamp.subsec_nanos();
-    format!("./tmp/tempest_tests/{}-{}.{}", name, millis, subsec_nanos).into()
+    let secs = timestamp.as_secs();
+    let nanos = timestamp.subsec_nanos();
+
+    let mut path = PathBuf::from("./tmp");
+    path.push("tempest_tests");
+    path.push(format!("{}-{}.{:09}", name, secs, nanos));
+
+    std::fs::create_dir_all(&path)?;
+
+    Ok(path)
 }
