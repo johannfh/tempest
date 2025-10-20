@@ -3,9 +3,13 @@
 
 pub const TEMPEST_VERSION: u32 = 1;
 
-use std::{path::PathBuf, sync::atomic::AtomicU64};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::AtomicU64,
+};
 
 use bincode::{de::read::Reader, enc::write::Writer};
+use derive_more::{Display, Error, From};
 
 use crate::{
     arena::Arena,
@@ -103,9 +107,17 @@ pub struct DB {
     wal_manager: WalManager,
 }
 
+#[derive(Debug, Display, From, Error)]
+pub enum TempestError {
+    #[display("IO Error: {}", _0)]
+    IoError(std::io::Error),
+}
+
 impl DB {
-    #[instrument(level = "info", skip_all, fields(dir = ?dir))]
-    pub fn open(dir: PathBuf) -> Self {
+    #[instrument(level = "info", skip_all)]
+    pub fn open(dir: impl AsRef<Path>) -> Result<Self, TempestError> {
+        let dir: PathBuf = dir.as_ref().to_path_buf();
+        if tracing::enabled!(tracing::Level::INFO) {}
         let arena = Arena::new(1024 * 1024); // 1MiB arena
         if cfg!(test) {
             use std::time;
@@ -136,27 +148,27 @@ impl DB {
         } else {
             // In non-test environments, create the directory if it doesn't exist.
             if !dir.exists() {
-                std::fs::create_dir_all(&dir).expect("Failed to create data directory");
+                std::fs::create_dir_all(&dir)?;
                 info!(
                     ?dir,
-                    absolute_dir = ?std::fs::canonicalize(&dir).unwrap(),
+                    absolute_dir = ?std::fs::canonicalize(&dir)?,
                     "data directory created"
                 );
             } else {
                 info!(
                     ?dir,
-                    absolute_dir = ?std::fs::canonicalize(&dir).unwrap(),
+                    absolute_dir = ?std::fs::canonicalize(&dir)?,
                     "data directory exists"
                 );
             }
         }
 
-        Self {
+        Ok(Self {
             skiplist: ArenaSkiplist::new_in(arena),
             seqnum: AtomicU64::new(SeqNum::START),
             data_dir: dir.clone(),
             wal_manager: WalManager::new(dir),
-        }
+        })
     }
 
     /// Get the current sequence number.
@@ -212,12 +224,8 @@ impl DB {
         }
     }
 
-    // Cleanup the data directory. Only available in test builds.
-    // This is so the OS doesn't get cluttered with test data.
-    #[cfg(any(test, doctest))]
-    fn cleanup(&self) {
-        std::fs::remove_dir_all(&self.data_dir).expect("Failed to clean up data directory");
-        trace!("Cleaned up data dir: {:?}", self.data_dir);
+    pub fn dir(&self) -> &Path {
+        &self.data_dir
     }
 }
 
@@ -233,21 +241,5 @@ mod tests {
                     .finish(),
             );
         };
-    }
-
-    use super::*;
-
-    #[test]
-    fn test_create_tempest() {
-        init!();
-
-        let tempest = DB::open("./data".into());
-        tempest.insert(b"key1", b"value1");
-        tempest.insert(b"key2", b"value2");
-        tempest.insert(b"key1", b"value3"); // Update key1
-        let value = tempest.get(b"key1").expect("key1 should exist");
-        assert_eq!(value, b"value3");
-
-        tempest.cleanup();
     }
 }

@@ -151,7 +151,7 @@ async fn main() {
         tracing::level_filters::STATIC_MAX_LEVEL,
     );
 
-    let db = tempest::DB::open("./data/".into());
+    let db = tempest::DB::open("./data/").expect("failed to open database");
 
     db.insert(b"key1", b"value1");
     info!("Inserted key1 with value1");
