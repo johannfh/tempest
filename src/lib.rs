@@ -15,7 +15,7 @@ use crate::{
     arena::Arena,
     arena_skiplist::ArenaSkiplist,
     core::{Key, KeyKind, KeyTrailer, SeqNum, Value},
-    wal::WalManager,
+    //wal::WalManager,
 };
 
 mod arena;
@@ -103,8 +103,8 @@ pub struct KvStore {
     /// The skiplist that holds the key-value pairs.
     skiplist: ArenaSkiplist,
 
-    /// The write-ahead log manager.
-    wal_manager: WalManager,
+    // The write-ahead log manager.
+    //wal_manager: WalManager,
 }
 
 #[derive(Debug, Display, From, Error)]
@@ -167,7 +167,7 @@ impl KvStore {
             skiplist: ArenaSkiplist::new_in(arena),
             seqnum: AtomicU64::new(SeqNum::START),
             data_dir: dir.clone(),
-            wal_manager: WalManager::new(dir),
+            //wal_manager: WalManager::new(dir),
         })
     }
 

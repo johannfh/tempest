@@ -1,6 +1,6 @@
 use bincode::{de::read::Reader, enc::write::Writer};
 use derive_more::Display;
-use num_enum::TryFromPrimitive;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 pub type Key<'a> = &'a [u8];
 pub type Value<'a> = &'a [u8];
@@ -27,7 +27,7 @@ impl From<u64> for SeqNum {
 }
 
 /// Type of the key-value entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub(crate) enum KeyKind {
     /// A deletion marker for a key.
