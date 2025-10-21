@@ -153,11 +153,11 @@ async fn main() {
 
     let kv = tempest::KvStore::open("./data/").expect("failed to open kv store");
 
-    kv.insert(b"key1", b"value1");
+    kv.insert(b"key1", b"value1").unwrap();
     info!("Inserted key1 with value1");
-    kv.insert(b"key2", b"value2");
+    kv.insert(b"key2", b"value2").unwrap();
     info!("Inserted key2 with value2");
-    kv.insert(b"key1", b"value3"); // Update key1
+    kv.insert(b"key1", b"value3").unwrap(); // Update key1
     info!("Updated key1 with value3");
 
     let val1 = kv.get(b"key1").expect("key1 should exist");

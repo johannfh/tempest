@@ -14,8 +14,7 @@ use derive_more::{Display, Error, From};
 use crate::{
     arena::Arena,
     arena_skiplist::ArenaSkiplist,
-    core::{Key, KeyKind, KeyTrailer, SeqNum, Value},
-    //wal::WalManager,
+    core::{KeyKind, KeySlice, KeyTrailer, SeqNum, ValueSlice},
 };
 
 mod arena;
@@ -102,7 +101,6 @@ pub struct KvStore {
 
     /// The skiplist that holds the key-value pairs.
     skiplist: ArenaSkiplist,
-
     // The write-ahead log manager.
     //wal_manager: WalManager,
 }
@@ -167,7 +165,7 @@ impl KvStore {
             skiplist: ArenaSkiplist::new_in(arena),
             seqnum: AtomicU64::new(SeqNum::START),
             data_dir: dir.clone(),
-            //wal_manager: WalManager::new(dir),
+            //wal_manager: WalManager::open(dir, 16 * 1024)?,
         })
     }
 
@@ -189,9 +187,14 @@ impl KvStore {
         value_len = value.len(),
         value_hex = hex::encode(value),
     ))]
-    pub fn insert(&self, key: Key, value: Value) {
+    pub fn insert(&self, key: KeySlice, value: ValueSlice) -> Result<(), TempestError> {
         let seqnum = self.next_seqnum();
+
         let key_trailer = KeyTrailer::new(seqnum, KeyKind::Set);
+
+        //self.wal_manager
+        //    .append_entries(&[(key, key_trailer, value)])?;
+
         self.skiplist
             .insert(key, key_trailer, value)
             .expect("insert should succeed");
@@ -199,6 +202,8 @@ impl KvStore {
             "inserted key: {:?}, seqnum: {}, value: {:?}",
             key, seqnum, value
         );
+
+        Ok(())
     }
 
     #[instrument(level = "debug", skip_all, fields(
@@ -206,7 +211,7 @@ impl KvStore {
         key_hex = hex::encode(key),
         value_len, value_hex, seqnum,
     ))]
-    pub fn get(&self, key: Key) -> Option<Value<'_>> {
+    pub fn get(&self, key: KeySlice) -> Option<ValueSlice<'_>> {
         match self.skiplist.get(key, SeqNum::MAX) {
             Some((key_trailer, value)) => {
                 if tracing::enabled!(tracing::Level::DEBUG) {

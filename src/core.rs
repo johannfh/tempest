@@ -2,8 +2,14 @@ use bincode::{de::read::Reader, enc::write::Writer};
 use derive_more::Display;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-pub type Key<'a> = &'a [u8];
-pub type Value<'a> = &'a [u8];
+// NOTE: May have owned variants in the future.
+// Currently, keys and values are represented as borrowed slices.
+// This avoids unnecessary data copying during data store operations.
+
+/// A borrowed slice representing a key.
+pub type KeySlice<'a> = &'a [u8];
+/// A borrowed slice representing a value.
+pub type ValueSlice<'a> = &'a [u8];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Display)]
 #[display("#{}", _0)]
@@ -39,6 +45,13 @@ pub(crate) enum KeyKind {
     Merge = 2,
 }
 
+/// The trailer associated with a key in the write-ahead log.
+/// It encodes the sequence number and the kind of the key.
+///
+/// # Layout
+///
+/// - Lower Bits 0-7: [`KeyKind`] (u8)
+/// - Upper Bits 8-63: [`SeqNum`] (u56)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub(crate) struct KeyTrailer(u64);
@@ -47,6 +60,10 @@ impl KeyTrailer {
     pub(crate) fn new(seqnum: impl Into<SeqNum>, kind: KeyKind) -> Self {
         let seqnum: SeqNum = seqnum.into();
         Self(seqnum.inner() << 8 | (kind as u64))
+    }
+
+    pub(crate) fn inner(&self) -> u64 {
+        self.0
     }
 
     pub(crate) fn seqnum(&self) -> SeqNum {
@@ -84,6 +101,11 @@ impl bincode::Decode<()> for KeyTrailer {
 impl TryFrom<u64> for KeyTrailer {
     type Error = &'static str;
 
+    /// Tries to create a `KeyTrailer` from a raw u64 value.
+    /// Returns an error if the key kind is invalid.
+    ///
+    /// # Errors
+    /// - "invalid key kind": if the lower 8 bits do not correspond to a valid `KeyKind`.
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let kind = (value & 0xff) as u8;
         match KeyKind::try_from(kind) {

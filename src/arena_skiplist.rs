@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicU32;
 
 use crate::arena::Arena;
-use crate::core::{Key, KeyKind, KeyTrailer, SeqNum, Value};
+use crate::core::{KeyKind, KeySlice, KeyTrailer, SeqNum, ValueSlice};
 
 /// Maximum height of the skiplist.
 pub const MAX_HEIGHT: u8 = 20;
@@ -113,7 +113,7 @@ impl Node {
     }
 
     /// Returns a slice of the key.
-    fn key(&self) -> Key<'_> {
+    fn key(&self) -> KeySlice<'_> {
         // SAFETY: key_size is set at allocation time and should be valid.
         let ptr = self as *const Node as *const u8;
         unsafe {
@@ -122,7 +122,7 @@ impl Node {
     }
 
     /// Returns a slice of the value.
-    fn value(&self) -> Value<'_> {
+    fn value(&self) -> ValueSlice<'_> {
         // SAFETY: value_size is set at allocation time and should be valid.
         unsafe {
             std::slice::from_raw_parts(
@@ -133,7 +133,7 @@ impl Node {
         }
     }
 
-    fn set_key(&mut self, key: Key<'_>) {
+    fn set_key(&mut self, key: KeySlice<'_>) {
         assert!(
             key.len() as u32 == self.key_size,
             "key length must match allocated size"
@@ -146,7 +146,7 @@ impl Node {
         }
     }
 
-    fn set_value(&mut self, value: Value<'_>) {
+    fn set_value(&mut self, value: ValueSlice<'_>) {
         assert!(
             value.len() as u32 == self.value_size,
             "value length must match allocated size"
@@ -444,9 +444,9 @@ impl ArenaSkiplist {
     /// method to determine the height based on a fixed probability `P`.
     fn insert_impl(
         &self,
-        key: Key,
+        key: KeySlice,
         key_trailer: KeyTrailer,
-        value: Value,
+        value: ValueSlice,
         height: u8,
     ) -> Result<(), InsertError> {
         let key_size = key.len() as u32;
@@ -510,9 +510,9 @@ impl ArenaSkiplist {
     ))]
     pub(crate) fn insert(
         &self,
-        key: Key,
+        key: KeySlice,
         key_trailer: KeyTrailer,
-        value: Value,
+        value: ValueSlice,
     ) -> Result<(), InsertError> {
         // determine the height of the new node using a probabilistic method
         let mut height = 1;
@@ -534,9 +534,9 @@ impl ArenaSkiplist {
     ))]
     pub(crate) fn get(
         &self,
-        key: Key,
+        key: KeySlice,
         max_seqnum: impl Into<SeqNum>,
-    ) -> Option<(KeyTrailer, Value<'_>)> {
+    ) -> Option<(KeyTrailer, ValueSlice<'_>)> {
         let max_seqnum: SeqNum = max_seqnum.into();
         tracing::Span::current().record("max_seqnum", max_seqnum.inner());
         let mut iter = self.iter(max_seqnum);
@@ -638,7 +638,7 @@ impl<'a> Iter<'a> {
         self
     }
 
-    pub(crate) fn seek_to_key(&mut self, key: Key) -> &mut Self {
+    pub(crate) fn seek_to_key(&mut self, key: KeySlice) -> &mut Self {
         trace!(
             key = String::from_utf8_lossy(key).as_ref(),
             height = self.current_height,
@@ -718,7 +718,7 @@ impl<'a> Iter<'a> {
 }
 
 impl<'a> Iterator for Iter<'a> {
-    type Item = (Key<'a>, KeyTrailer, Value<'a>);
+    type Item = (KeySlice<'a>, KeyTrailer, ValueSlice<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         trace!(
@@ -835,7 +835,7 @@ mod tests {
         let mut iter = skiplist.iter(3);
         iter.descend_to_bottom();
         assert!(iter.current_height == 1, "should be at bottom level");
-        let results: Vec<(Key, KeyTrailer, Value)> = iter.collect();
+        let results: Vec<(KeySlice, KeyTrailer, ValueSlice)> = iter.collect();
 
         assert_eq!(results[0].0, b"key1".as_ref());
         assert_eq!(results[0].1.seqnum(), 3.into());
