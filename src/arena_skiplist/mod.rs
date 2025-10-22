@@ -5,6 +5,17 @@ pub(crate) use arena::*;
 
 mod arena;
 
+pub(crate) const MIN_ARENA_SIZE: u32 = {
+    let empty_max_height_size = Node::size_total(MAX_HEIGHT, 0, 0);
+    let min_nodes = 2; // head and tail
+
+    let mut n: u32 = 1;
+    while n < empty_max_height_size * min_nodes {
+        n *= 2;
+    }
+    n
+};
+
 /// Maximum height of the skiplist.
 pub const MAX_HEIGHT: u8 = 20;
 /// Probability of increasing the height of a node.
@@ -43,7 +54,7 @@ impl NodeLink {
 }
 
 #[repr(C)]
-struct Node {
+pub(crate) struct Node {
     /// Offset to the key-value data in the arena.
     data_offset: u32,
     /// Length of the key.
@@ -65,7 +76,7 @@ impl Node {
     /// Calculates the size of a node with the given height.
     /// This is the size of the `Node` struct minus the size of the unused [`NodeLink`]s.
     #[inline]
-    const fn size_node(height: u8) -> u32 {
+    pub(crate) const fn size_node(height: u8) -> u32 {
         let unused_links_size =
             (MAX_HEIGHT - height) as u32 * std::mem::size_of::<NodeLink>() as u32;
         let node_size = std::mem::size_of::<Node>() as u32;
@@ -75,14 +86,14 @@ impl Node {
     /// Calculates the size of the key-value data.
     /// This is the sum of the key size and value size.
     #[inline]
-    const fn size_data(key_size: u32, value_size: u32) -> u32 {
+    pub(crate) const fn size_data(key_size: u32, value_size: u32) -> u32 {
         key_size + value_size
     }
 
     /// Calculates the total size of a node with the given height and key-value data sizes.
     /// This is the sum of the node size and the key-value data size.
     #[inline]
-    const fn size_total(height: u8, key_size: u32, value_size: u32) -> u32 {
+    pub(crate) const fn size_total(height: u8, key_size: u32, value_size: u32) -> u32 {
         Self::size_node(height) + Self::size_data(key_size, value_size)
     }
 
@@ -190,13 +201,12 @@ pub(crate) struct ArenaSkiplist {
 
 impl ArenaSkiplist {
     pub(crate) fn new_in(arena: Arena) -> Self {
-        let required_size = std::mem::size_of::<Node>() as u32 * 2;
         let capacity = arena.capacity();
         assert!(
-            capacity >= required_size,
-            "arena must be large enough to hold at least two nodes (head and tail), got capacity {}, required {}",
+            capacity >= MIN_ARENA_SIZE,
+            "arena must be at least {} bytes, got {} bytes",
             capacity,
-            required_size
+            MIN_ARENA_SIZE
         );
 
         let mut skiplist = ArenaSkiplist {

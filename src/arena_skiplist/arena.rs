@@ -8,15 +8,15 @@ pub(crate) struct Arena {
 }
 
 impl Arena {
-    pub(crate) fn new(cap: usize) -> Self {
-        assert!(cap > 0, "capacity must be greater than 0");
+    pub(crate) fn new(cap: u32) -> Self {
+        debug_assert!(cap > 0, "capacity must be greater than 0");
         assert!(
-            cap <= u32::MAX as usize,
+            cap <= MAX_ARENA_SIZE,
             "capacity must be less than or equal to {}",
-            u32::MAX
+            MAX_ARENA_SIZE,
         );
         Self {
-            buffer: vec![0; cap].into_boxed_slice(),
+            buffer: vec![0; cap as usize].into_boxed_slice(),
             position: 0.into(),
         }
     }
