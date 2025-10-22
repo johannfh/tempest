@@ -2,14 +2,15 @@ use bincode::{de::read::Reader, enc::write::Writer};
 use derive_more::Display;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-// NOTE: May have owned variants in the future.
-// Currently, keys and values are represented as borrowed slices.
-// This avoids unnecessary data copying during data store operations.
-
 /// A borrowed slice representing a key.
 pub type KeySlice<'a> = &'a [u8];
 /// A borrowed slice representing a value.
 pub type ValueSlice<'a> = &'a [u8];
+
+// An owned key.
+pub type Key = Vec<u8>;
+// An owned value.
+pub type Value = Vec<u8>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Display)]
 #[display("#{}", _0)]
