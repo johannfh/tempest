@@ -25,7 +25,7 @@
 //!
 //! NOTE: The following components will likely be changed, current work is focused on
 //! async-runtime-agnostic file I/O abstraction and evaulating an io_uring based implementation.
-//! 
+//!
 //! --- Outdated ---
 //!
 //! ### WalManager
@@ -61,4 +61,3 @@
 //! - File I/O operations are performed using asynchronous methods to ensure non-blocking behavior.
 //!   This makes the WAL suitable for high-performance applications, but it also forces the use of
 //!   async/await patterns in Rust.
-

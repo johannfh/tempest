@@ -151,18 +151,20 @@ async fn main() {
         tracing::level_filters::STATIC_MAX_LEVEL,
     );
 
-    let kv = tempest::KvStore::open("./data/").expect("failed to open kv store");
+    todo!("The KvStore is not yet implemented; example will be restored later.");
 
-    kv.insert(b"key1", b"value1").unwrap();
-    info!("Inserted key1 with value1");
-    kv.insert(b"key2", b"value2").unwrap();
-    info!("Inserted key2 with value2");
-    kv.insert(b"key1", b"value3").unwrap(); // Update key1
-    info!("Updated key1 with value3");
+    //let kv = tempest::KvStore::open("./data/").expect("failed to open kv store");
 
-    let val1 = kv.get(b"key1").expect("key1 should exist");
-    info!("Retrieved key1 with value: {:?}", hex::encode(val1));
+    //kv.insert(b"key1", b"value1").unwrap();
+    //info!("Inserted key1 with value1");
+    //kv.insert(b"key2", b"value2").unwrap();
+    //info!("Inserted key2 with value2");
+    //kv.insert(b"key1", b"value3").unwrap(); // Update key1
+    //info!("Updated key1 with value3");
 
-    let val2 = kv.get(b"key2").expect("key2 should exist");
-    info!("Retrieved key2 with value: {:?}", hex::encode(val2));
+    //let val1 = kv.get(b"key1").expect("key1 should exist");
+    //info!("Retrieved key1 with value: {:?}", hex::encode(val1));
+
+    //let val2 = kv.get(b"key2").expect("key2 should exist");
+    //info!("Retrieved key2 with value: {:?}", hex::encode(val2));
 }
