@@ -1,7 +1,9 @@
 use std::sync::atomic::AtomicU32;
 
-use crate::arena::Arena;
 use crate::core::{KeyKind, KeySlice, KeyTrailer, SeqNum, ValueSlice};
+pub(crate) use arena::*;
+
+mod arena;
 
 /// Maximum height of the skiplist.
 pub const MAX_HEIGHT: u8 = 20;

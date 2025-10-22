@@ -12,12 +12,11 @@ use bincode::{de::read::Reader, enc::write::Writer};
 use derive_more::{Display, Error, From};
 
 use crate::{
-    arena::Arena,
+    arena_skiplist::Arena,
     arena_skiplist::ArenaSkiplist,
     core::{KeyKind, KeySlice, KeyTrailer, SeqNum, ValueSlice},
 };
 
-mod arena;
 mod arena_skiplist;
 mod core;
 mod wal;
