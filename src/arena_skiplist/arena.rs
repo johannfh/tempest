@@ -94,14 +94,19 @@ impl Arena {
     /// `offset` can be used with the [`Arena::get_ptr`] and [`Arena::get_mut_ptr`] methods to
     /// obtain pointers to the allocated memory.
     ///
-    /// NB: The `offset` may not be aligned to `align` itself, but the pointer obtained
+    /// NOTE: The `offset` may not be aligned to `align` itself, but the pointer obtained
     /// from `get_ptr` or `get_mut_ptr` using the `offset` will be properly aligned.
     ///
     /// # Safety
     /// - `align` must be a power of two.
     /// - `size` must be greater than zero.
+    #[instrument(level = "trace", skip(self))]
     pub(crate) unsafe fn allocate(&self, size: u32, align: u32) -> Option<u32> {
-        debug_assert!(align.is_power_of_two(), "align must be a power of two");
+        debug_assert!(
+            align.is_power_of_two(),
+            "align must be a power of two, got {}",
+            align
+        );
         debug_assert!(size > 0, "size must be greater than zero");
 
         // SAFETY: We allocated the buffer in `new` with the specified capacity.
@@ -109,28 +114,52 @@ impl Arena {
         let base_ptr = unsafe { (*self.buffer.get()).as_ptr() };
 
         loop {
+            trace!(
+                "Attempting allocation of size {} with alignment {}",
+                size, align,
+            );
             let current_pos = self.position.load(Ordering::Relaxed);
             let current_ptr = unsafe { base_ptr.add(current_pos as usize) };
 
             let misalignment = current_ptr.align_offset(align as usize);
             if misalignment == usize::MAX {
-                // Alignment not possible, e.g., due to insufficient space.
+                trace!("Allocation failed: alignment not possible");
                 return None;
             }
 
             let aligned_pos = current_pos.checked_add(misalignment as u32)?;
 
-            let new_pos = aligned_pos.checked_add(size)?;
+            let new_pos = match aligned_pos.checked_add(size) {
+                Some(pos) => pos,
+                None => {
+                    trace!("Allocation failed: size overflow");
+                    return None;
+                }
+            };
 
             if new_pos > self.capacity {
+                trace!(
+                    "Allocation failed: not enough space (requested {}, available aligned {})",
+                    size,
+                    self.capacity - aligned_pos,
+                );
                 return None;
             }
+
+            trace!(
+                "Current pos: {}, Aligned pos: {}, New pos: {}",
+                current_pos, aligned_pos, new_pos,
+            );
 
             if self
                 .position
                 .compare_exchange(current_pos, new_pos, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
+                trace!(
+                    "Allocation successful: allocated {} bytes at offset {}",
+                    size, aligned_pos,
+                );
                 return Some(aligned_pos);
             }
         }
@@ -208,10 +237,14 @@ unsafe impl Sync for Arena {}
 
 #[cfg(test)]
 mod tests {
+    use crate::init;
+
     use super::Arena;
 
     #[test]
     fn test_arena_allocation() {
+        init!();
+
         unsafe {
             let arena = Arena::new(1024);
 
@@ -258,6 +291,8 @@ mod tests {
 
     #[test]
     fn test_arena_max_capacity() {
+        init!();
+
         let max_capacity = Arena::MAX_CAPACITY;
         #[cfg(target_pointer_width = "64")]
         assert_eq!(max_capacity, u32::MAX);
