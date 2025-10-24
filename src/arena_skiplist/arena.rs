@@ -255,4 +255,13 @@ mod tests {
             assert_eq!(ptr6.align_offset(64), 0);
         }
     }
+
+    #[test]
+    fn test_arena_max_capacity() {
+        let max_capacity = Arena::MAX_CAPACITY;
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(max_capacity, u32::MAX);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(max_capacity, 2_147_483_647);
+    }
 }

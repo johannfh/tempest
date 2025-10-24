@@ -5,6 +5,9 @@ mod arena_skiplist;
 mod core;
 mod wal;
 
+#[cfg(not(any(target_pointer_width = "64", target_pointer_width = "32")))]
+compile_error!("tempest only supports 32-bit and 64-bit architectures");
+
 #[macro_use]
 extern crate tracing;
 
